@@ -78,7 +78,7 @@ Topologies/deployment:
 - Self-Managed: HA, Compact, TNA, SNO
 - ROSA: Classic and HCP
 
-#### Option 1. Opt-in NLB provisioning with Security Groups for Default Ingress with NO SG control by CCM
+#### Option 1. Opt-in NLB provisioning with Security Groups for Default Ingress with NO SG control by CCM <a name="goal-option-1"></a>
 
 Users will be able to deploy OpenShift on AWS with the default Ingress using Network Load Balancers with Security Groups when enabled (opt-in) in the `install-config.yaml`. The installation agent (`openshift-install`, `hypershift`) manages the Security Group creation.
 
@@ -131,7 +131,7 @@ Goals:
 
 ---
 
-#### Option 2. Opt-in NLB provisioning with Security Groups for Default Ingress with FULL SG control by CCM
+#### Option 2. Opt-in NLB provisioning with Security Groups for Default Ingress with FULL SG control by CCM <a name="goal-option-2"></a>
 
 Users will be able to deploy OpenShift on AWS with the default Ingress using Network Load Balancers with Security Groups when enabled (opt-in) in the `install-config.yaml`. CCM-AWS fully manages the SG lifecycle (similar to CLB, but as opt-in through annotation).
 
@@ -169,7 +169,7 @@ e2e PoC: N/A
 
 ---
 
-#### Option 3. NLB feature parity on CCM with ALBC
+#### Option 3. NLB feature parity on CCM with ALBC <a name="goal-option-3"></a>
 
 T-Shirt Sizing/complexity by component:
 | Component | T-Shirt Size | Complexity | Note                                                                      |
@@ -186,7 +186,7 @@ e2e PoC: N/A
 
 ---
 
-#### Option 4. CIO switches to ALBC
+#### Option 4. CIO switches to ALBC <a name="goal-option-4"></a>
 
 T-Shirt Sizing/complexity by component:
 | Component | T-Shirt Size | Complexity | Note                                                            |
@@ -203,7 +203,7 @@ e2e PoC: N/A
 
 ---
 
-#### Option 1+4. Short-term security fixes with long-term Ingress improvements
+#### Option 1+4. Short-term security fixes with long-term Ingress improvements <a name="goal-option-1-2-plus-4"></a>
 
 > Note: Can be 2+4 too, but this will impact resource investments in feature parity with CCM.
 
@@ -233,16 +233,22 @@ e2e PoC: N/A
 #### Summary
 
 
-| Option       | CCM   | CIO   | Installer | ROSA CL | ROSA HCP | Day-2 | Opt.ETA (SM) |
-|--------------|-------|-------|-----------|---------|----------|-------|--------------|
-| Option 1     | S     | S     | M         | M?      | M?       | M     | 4.20         |
-| Option 2     | M     | S     | S         | S?      | S?       | S     | 4.20         |
-| Option 3     | XXL   | S     | S         | S?      | S?       | S     | 4.21+        |
-| Option 4     | -     | XXL   | S         | S?      | S?       | S     | 4.21+        |
-| Option 1+4   | S     | XXL   | M         | M?      | M?       | M     | 4.20+        |
-| Option 2+4   | M     | XXL   | S         | M?      | M?       | S     | 4.20+        |
-| Option 1+3   | XXL   | S     | M         | M?      | M?       | M     | 4.20+        |
-| Option 2+3   | XXL   | S     | S         | M?      | M?       | S     | 4.20+        |
+| Option           | CCM   | CIO   | Installer | ROSA CL | ROSA HCP | Day-2 | Opt.ETA (SM) | Focus      |
+|------------------|-------|-------|-----------|---------|----------|-------|--------------|------------|
+| [Option 1][o1]   | S     | S     | M         | M?      | M?       | M     | 4.20         | Short-term |
+| [Option 2][o2]   | M     | S     | S         | S?      | S?       | S     | 4.20         | Short-term |
+| [Option 3][o3]   | XXL   | S     | S         | S?      | S?       | S     | 4.21+        | Long-term  |
+| [Option 4][o4]   | -     | XXL   | S         | S?      | S?       | S     | 4.21+        | Long-term  |
+| [Option 1+4][op] | S     | XXL   | M         | M?      | M?       | M     | 4.20+        | Short/Long |
+| [Option 2+4][op] | M     | XXL   | S         | M?      | M?       | S     | 4.20+        | Short/Long |
+| [Option 1+3][op] | XXL   | S     | M         | M?      | M?       | M     | 4.20+        | Short/Long |
+| [Option 2+3][op] | XXL   | S     | S         | M?      | M?       | S     | 4.20+        | Short/Long |
+
+[o1]: #goal-option-1
+[o2]: #goal-option-2
+[o3]: #goal-option-3
+[o4]: #goal-option-4
+[op]: #goal-option-1-2-plus-4
 
 ___
 ___
