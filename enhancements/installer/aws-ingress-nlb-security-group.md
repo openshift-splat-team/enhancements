@@ -3,11 +3,13 @@ title: support-security-group-default-router
 authors:
   - TBD
 reviewers: # Include a comment about what domain expertise a reviewer is expected to bring and what area of the enhancement you expect them to focus on. For example: - "@networkguru, for networking aspects, please look at IP bootstrapping aspect"
-  - @rvanderpool
+  - @rvanderp3
 approvers: # A single approver is preferred, the role of the approver is to raise important questions, help ensure the enhancement receives reviews from all applicable areas/SMEs, and determine when consensus is achieved such that the EP can move forward to implementation.  Having multiple approvers makes it difficult to determine who is responsible for the actual approval.
   - @patrick   # Installer changes
   - @joelspeed # API and CCM changes
   - @miciah    # CIO changes
+  - # ROSA Classic
+  - # ROSA HCP
 
 api-approvers: # In case of new or modified APIs or API extensions (CRDs, aggregated apiservers, webhooks, finalizers). If there is no API change, use "None"
   - TBD
@@ -86,14 +88,14 @@ Highlights:
 - Minimal changes to CCM.
 
 T-Shirt Sizing/complexity by component:
-| Component | T-Shirt Size | Complexity | Note |
-| -- | -- | -- | -- |
-| CCM   | S | S | No API changes, No SG management, Opt-in. |
-| CIO | S | S | API adds SG ID/Name to service annotation. |
-| Installer | S | S | API enabling feature; Creates Ingress SG (SDK). |
-| ROSA CL | M? | M? | TBD: API enabling feature(?); creates Ingress SG; updates `install-config`. |
-| ROSA HCP | M? | M? | TBD: API enabling feature(?); SG mgt; creates CIO manifests to enable SG. |
-| Day-2 | S | M | BYO SG (can managed services automate through CLI?), patch CIO to recreate NLB. |
+| Component | T-Shirt Size | Complexity | Note                                                                            |
+|-----------|--------------|------------|---------------------------------------------------------------------------------|
+| CCM       | S            | S          | No API changes, No SG management, Opt-in.                                       |
+| CIO       | S            | S          | API adds SG ID/Name to service annotation.                                      |
+| Installer | S            | S          | API enabling feature; Creates Ingress SG (SDK).                                 |
+| ROSA CL   | M?           | M?         | TBD: API enabling feature(?); creates Ingress SG; updates `install-config`.     |
+| ROSA HCP  | M?           | M?         | TBD: API enabling feature(?); SG management; creates CIO manifests to enable SG.|
+| Day-2     | S            | M          | BYO SG (can managed services automate through CLI?), patch CIO to recreate NLB. |
 
 Risk:
 - Upstream CCM changes can take longer than expected (small changes may propagate downstream).
@@ -139,14 +141,14 @@ Highlights:
 - Moderate changes to CCM.
 
 T-Shirt Sizing/complexity by component:
-| Component | T-Shirt Size | Complexity | Note |
-| -- | -- | -- | -- |
-| CCM | M | M | API introduces annotation to "create SG on NLB" (default for CLB). |
-| CIO | S | S | API adds SG ID/Name to service annotation. |
-| Installer | S | S | No SG mgt; API enabling feature. |
-| ROSA CL | S? | S? | No SG mgt; updates `install-config`. |
-| ROSA HCP | S? | S? | No SG mgt; creates CIO manifests to "enable NLB with SG". |
-| Day-2 | S | S | Patch CIO to recreate NLB. |
+| Component | T-Shirt Size | Complexity | Note                                                               |
+|-----------|--------------|------------|--------------------------------------------------------------------|
+| CCM       | M            | M          | API introduces annotation to "create SG on NLB" (default for CLB). |
+| CIO       | S            | S          | API adds SG ID/Name to service annotation.                         |
+| Installer | S            | S          | No SG management; API enabling feature.                            |
+| ROSA CL   | S?           | S?         | No SG management; updates `install-config`.                        |
+| ROSA HCP  | S?           | S?         | No SG management; creates CIO manifests to "enable NLB with SG".   |
+| Day-2     | S            | S          | Patch CIO to recreate NLB.                                         |
 
 Risk:
 - CCM/upstream:
@@ -170,14 +172,14 @@ e2e PoC: N/A
 #### Option 3. NLB feature parity on CCM with ALBC
 
 T-Shirt Sizing/complexity by component:
-| Component | T-Shirt Size | Complexity | Note |
-| -- | -- | -- | -- |
-| CCM | XXL | XXL | NLB feature parity plan with ALBC. Long-term commitment and support by RH. |
-| CIO | S | S | API adds SG ID/Name to service annotation. |
-| Installer | S | S | No SG mgt; API enabling feature. |
-| ROSA CL | S? | S? | No SG mgt; updates `install-config`. |
-| ROSA HCP | S? | S? | No SG mgt; creates CIO manifests to "enable NLB with SG". |
-| Day-2 | S | S | Patch CIO to recreate NLB. |
+| Component | T-Shirt Size | Complexity | Note                                                                      |
+|-----------|--------------|------------|---------------------------------------------------------------------------|
+| CCM       | XXL          | XXL        | NLB feature parity plan with ALBC. Long-term commitment and support by RH.|
+| CIO       | S            | S          | API adds SG ID/Name to service annotation.                                |
+| Installer | S            | S          | No SG management; API enabling feature.                                   |
+| ROSA CL   | S?           | S?         | No SG management; updates `install-config`.                               |
+| ROSA HCP  | S?           | S?         | No SG management; creates CIO manifests to "enable NLB with SG".          |
+| Day-2     | S            | S          | Patch CIO to recreate NLB.                                                |
 
 
 e2e PoC: N/A
@@ -187,14 +189,14 @@ e2e PoC: N/A
 #### Option 4. CIO switches to ALBC
 
 T-Shirt Sizing/complexity by component:
-| Component | T-Shirt Size | Complexity | Note |
-| -- | -- | -- | -- |
-| CCM | - | - | CCM will not be used by the default router. |
-| CIO | XXL | XL | API: (short-term) opt-in NLB provisioning with SG using ALBC; (long-term) all new provisioning with ALBC; move images to payload; manage operator lifecycle (permissions, etc.). |
-| Installer | S | S | No SG mgt; API enabling feature. |
-| ROSA CL | S? | S? | No SG mgt; updates `install-config`. |
-| ROSA HCP | S? | S? | No SG mgt; creates CIO manifests to "enable NLB with SG". |
-| Day-2 | S | S | Patch CIO to recreate NLB. |
+| Component | T-Shirt Size | Complexity | Note                                                            |
+|-----------|--------------|------------|-----------------------------------------------------------------|
+| CCM       | -            | -          | CCM will not be used by the default router.                     |
+| CIO       | XXL          | XL         | API: (short-term) opt-in NLB provisioning with SG using ALBC; (long-term) all new provisioning with ALBC; move images to payload; manage operator lifecycle (permissions, etc.). |
+| Installer | S            | S          | No SG management; API enabling feature.                         |
+| ROSA CL   | S?           | S?         | No SG management; updates `install-config`.                     |
+| ROSA HCP  | S?           | S?         | No SG management; creates CIO manifests to "enable NLB with SG".|
+| Day-2     | S            | S          | Patch CIO to recreate NLB.                                      |
 
 
 e2e PoC: N/A
@@ -215,18 +217,35 @@ Highlights:
 
 T-Shirt Sizing/complexity by component:
 | Component | T-Shirt Size | Complexity | Note |
-| -- | -- | -- | -- |
-| CCM | S | S | No API changes, No SG management, Opt-in. |
-| CIO | XXL | XL | API: (short-term) opt-in NLB provisioning with SG using ALBC; (long-term) all new provisioning with ALBC; move images to payload; manage operator lifecycle (permissions, etc.). |
-| Installer | S | S | API enabling feature; Creates Ingress SG (SDK). |
-| ROSA CL | M? | M? | TBD: (short-term) API enabling feature(?); creates Ingress SG; updates `install-config`; (long-term) fixes many issues. |
-| ROSA HCP | M? | M? | TBD: (short-term) API enabling feature(?); SG mgt; creates CIO manifests to enable SG; (long-term) fixes many issues. |
-| Day-2 | S | M | (short-term) BYO SG (can managed services automate through CLI?), (short-term & long-term) patch CIO to recreate NLB. |
+|-----------|--------------|------------|------|
+| CCM       | S            | S          | No API changes, No SG management, Opt-in. |
+| CIO       | XXL          | XL         | API: (short-term) opt-in NLB provisioning with SG using ALBC; (long-term) all new provisioning with ALBC; move images to payload; manage operator lifecycle (permissions, etc.). |
+| Installer | S            | S          | API enabling feature; Creates Ingress SG (SDK). |
+| ROSA CL   | M?           | M?         | TBD: (short-term) API enabling feature(?); creates Ingress SG; updates `install-config`; (long-term) fixes many issues. |
+| ROSA HCP  | M?           | M?         | TBD: (short-term) API enabling feature(?); SG mgt; creates CIO manifests to enable SG; (long-term) fixes many issues. |
+| Day-2     | S            | M          | (short-term) BYO SG (can managed services automate through CLI?), (short-term & long-term) patch CIO to recreate NLB. |
 
 
 e2e PoC: N/A
 
 ---
+
+#### Summary
+
+
+| Option       | CCM   | CIO   | Installer | ROSA CL | ROSA HCP | Day-2 | Opt.ETA (SM) |
+|--------------|-------|-------|-----------|---------|----------|-------|--------------|
+| Option 1     | S     | S     | M         | M?      | M?       | M     | 4.20         |
+| Option 2     | M     | S     | S         | S?      | S?       | S     | 4.20         |
+| Option 3     | XXL   | S     | S         | S?      | S?       | S     | 4.21+        |
+| Option 4     | -     | XXL   | S         | S?      | S?       | S     | 4.21+        |
+| Option 1+4   | S     | XXL   | M         | M?      | M?       | M     | 4.20+        |
+| Option 2+4   | M     | XXL   | S         | M?      | M?       | S     | 4.20+        |
+| Option 1+3   | XXL   | S     | M         | M?      | M?       | M     | 4.20+        |
+| Option 2+3   | XXL   | S     | S         | M?      | M?       | S     | 4.20+        |
+
+___
+___
 
 ### Non-Goals
 
@@ -234,11 +253,19 @@ e2e PoC: N/A
 
 Short-term:
 
-  - Migrate to use ALBC as the default on CIO.
-  - Use NLB as the default service type LoadBalancer.
-  - Synchronize NLB features from LBC to CCM.
-  - Change the current CCM flow when deploying NLB.
-  - Change the current OpenShift e2e flow when deploying the default router using IPI.
+  - Migrate to use ALBC as the default on CIO (option 3 and 4 could be written in a new EP?).
+  - Use NLB as the default service type LoadBalancer by CCM.
+  - Synchronize all NLB features from ALBC to CCM.
+  - Change the existing CCM flow when deploying NLB .
+  - Change the current OpenShift e2e flow when deploying the default router using IPI (do we need to plan for that?).
+
+Long-term (new enhancement?):
+
+Long-term:
+
+  - TBD which one would be better/sustainable by Red Hat?:
+      - Use ALBC as default provisioner on CIO
+      - Feature parity between CCM and ALBC 
 
 ## Proposal
 
@@ -251,20 +278,49 @@ Short-term:
 
 #### Option 1. Workflow
 
-- Create `install-config.yaml` enabling the use of Security Group **and** `lbType=NLB` (already exists).
-- The installer creates a security group to be used by the ingress controller during the InfraReady phase.
-- The installer generates the CIO manifests: enabling LB type NLB passing Security Group Names (IDs are not known yet during the manifest phase).
-- CIO creates the service for the default router, filling in the annotations for NLB and SG Names.
-- CCM checks annotations, maps Names to IDs, and provisions the Load Balancer NLB with the security group, updating SGs with the required rules for ingress (based on listeners) and egress (based on service and health check ports).
+> WIP
+
+- Create `install-config.yaml` enabling:
+    - `lbType=NLB` (already exists), and
+    - use of Security Group(SG) (new API, suggested: `platform.aws.ingressController.SecurityGroupEnabled`).
+- The installer generates the cluster-ingress-operator(CIO) manifest for default ingress enabling LB type NLB, and passing Security Group **Name** (IDs are not known yet during the manifest phase).
+- The installer creates a security group to be used by the ingress controller during the `InfraReady` phase (post-CAPA).
+- CIO creates the service for the default router, filling in the annotations for NLB and SG **Name**.
+- CCM checks annotations, then when LB type NLB:
+    - if annotation (existing for CLB) "" is set: **maps Names to IDs** (new), then provisions the Load Balancer type NLB with the security group ID(new), updating instance SG swith required rules (existing flow for CLB).
+
+
+Managed (TBD):
+
+- Classic:
+    - need to ensure install-config.yaml option writes the CIO manifests enabling NLB with SGs.
+    - (if Hive uses openshift-install to provision infra, no extra action)
+
+- HCP:
+    - need to ensure install-config.yaml option writes the CIO manifests enabling NLB with SGs.
+    - (hypershift? if not using openshift-install): need to evaluate if there is an post-infra hook to create the SG
 
 
 #### Option 2. Workflow CCM Manage SG
+
+> WIP
+
+Self-managed:
 
 - Create `install-config.yaml` enabling the use of Security Group **and** `lbType=NLB` (already exists).
 - The installer generates the CIO manifests: enabling LB type NLB.
 - CIO creates the service for the default router, filling a new annotation telling CCM to manage SGs.
 - CCM checks annotation to manage SG on NLB, creates the SG and rules, and pass the SG ID to LB creation. CCM controllers manages the SG lifecycle (controllers may exists in CLB).
+- CCM checks annotations, then when LB type NLB:
+  - if annotation `service.beta.kubernetes.io/aws-load-balancer-managed-security-group` (new) is set to `true`, then creates the SG with required rules for ingress (based on listeners) and egress (based on service and health check ports).
 
+Managed (TBD):
+
+- Classic:
+    - need to ensure install-config.yaml option writes the CIO manifests enabling NLB with SGs.
+
+- HCP:
+    - need to ensure install-config.yaml option writes the CIO manifests enabling NLB with SGs.
 
 ### API Extensions
 
