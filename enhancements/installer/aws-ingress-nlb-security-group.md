@@ -88,6 +88,7 @@ Highlights:
 - Minimal changes to CCM.
 
 T-Shirt Sizing/complexity by component:
+
 | Component | T-Shirt Size | Complexity | Note                                                                            |
 |-----------|--------------|------------|---------------------------------------------------------------------------------|
 | CCM       | S            | S          | No API changes, No SG management, Opt-in.                                       |
@@ -141,6 +142,7 @@ Highlights:
 - Moderate changes to CCM.
 
 T-Shirt Sizing/complexity by component:
+
 | Component | T-Shirt Size | Complexity | Note                                                               |
 |-----------|--------------|------------|--------------------------------------------------------------------|
 | CCM       | M            | M          | API introduces annotation to "create SG on NLB" (default for CLB). |
@@ -171,7 +173,12 @@ e2e PoC: N/A
 
 #### Option 3. NLB feature parity on CCM with ALBC <a name="goal-option-3"></a>
 
-T-Shirt Sizing/complexity by component:
+This option proposes to the NLB feature parity on CCM from [ALBC (AWS Load Balancer Controller)][albc]. This option requires Red Hat ownership and long-term commitment in the AWS Cloud Provider component (cloud-provider-aws), where the Load Balancer features have been "routed" to use ALBC to prevent overlap of code.
+
+This is equivalent of ["Solution 1: Leverage ALBO for NLBs in the future" of document "Supporting Security Groups for NLBs on AWS through Ingress on OCP"][eng-review-s1].
+
+Tentatively T-Shirt Sizing/complexity by component:
+
 | Component | T-Shirt Size | Complexity | Note                                                                      |
 |-----------|--------------|------------|---------------------------------------------------------------------------|
 | CCM       | XXL          | XXL        | NLB feature parity plan with ALBC. Long-term commitment and support by RH.|
@@ -184,11 +191,18 @@ T-Shirt Sizing/complexity by component:
 
 e2e PoC: N/A
 
+
+
 ---
 
-#### Option 4. CIO switches to ALBC <a name="goal-option-4"></a>
+#### Option 4. Leverage ALBO for NLBs in the future <a name="goal-option-4"></a>
 
-T-Shirt Sizing/complexity by component:
+This option suggests to switch cluster ingress operator to use ALBO/ALBC (AWS Load Balancer Operator/AWS Load Balancer Controller) of services used by the default Ingress on CIO (Cluster Ingress Operator).
+
+This is equivalent of [Solution 3: Become maintainers of the AWS CCM" of document "Supporting Security Groups for NLBs on AWS through Ingress on OCP"][eng-review-s1].
+
+Tentatively T-Shirt Sizing/complexity by component:
+
 | Component | T-Shirt Size | Complexity | Note                                                            |
 |-----------|--------------|------------|-----------------------------------------------------------------|
 | CCM       | -            | -          | CCM will not be used by the default router.                     |
@@ -249,6 +263,10 @@ e2e PoC: N/A
 [o3]: #goal-option-3
 [o4]: #goal-option-4
 [op]: #goal-option-1-2-plus-4
+
+[eng-review-s1]: https://docs.google.com/document/d/1nmNg722HPVg_oeihGCEkq0xvQW6NZ42f4wdJ5QJF4EM/edit?tab=t.0#heading=h.b4itjgannwla
+[eng-review-s3]: https://docs.google.com/document/d/1nmNg722HPVg_oeihGCEkq0xvQW6NZ42f4wdJ5QJF4EM/edit?tab=t.0#heading=h.t83kdo7niyo
+[albc]: https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/
 
 ___
 ___
