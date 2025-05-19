@@ -59,11 +59,11 @@ TODO: Evaluate the long-term improvements:
 
 > WIP
 
-FOCUS on customer (short-term):
+Focus on customer (short-term):
 
 - As an OpenShift administrator, I want to deploy a cluster on AWS using a Network Load Balancer with Security Groups in the default router service, so that I can comply with AWS best practices and "security findings"[1].
 
-FOCUS on product improvement (future, nice-to-have, and to unblock more features):
+Focus on product improvement (future to unblock more features):
 
 - As an OpenShift Engineer, I want to use NLB as the default LB for the router, following AWS best practices.
 
@@ -78,63 +78,9 @@ Topologies/deployment:
 - Self-Managed: HA, Compact, TNA, SNO
 - ROSA: Classic and HCP
 
-#### Option 1. Opt-in NLB provisioning with Security Groups for Default Ingress with NO SG control by CCM <a name="goal-option-1"></a>
+#### Opt-in NLB provisioning with Security Groups for Default Ingress with FULL SG control by CCM <a name="goal-option-2"></a>
 
-Users will be able to deploy OpenShift on AWS with the default Ingress using Network Load Balancers with Security Groups when enabled (opt-in) in the `install-config.yaml`. The installation agent (`openshift-install`, `hypershift`) manages the Security Group creation.
-
-Highlights:
-- Focus on short-term resolution of security issues when not using SG on NLB.
-- Focus on customer scalability when enabling SG on NLB.
-- Minimal changes to CCM.
-
-T-Shirt Sizing/complexity by component:
-
-| Component | T-Shirt Size | Complexity | Note                                                                            |
-|-----------|--------------|------------|---------------------------------------------------------------------------------|
-| CCM       | S            | S          | No API changes, No SG management, Opt-in.                                       |
-| CIO       | S            | S          | API adds SG ID/Name to service annotation.                                      |
-| Installer | S            | S          | API enabling feature; Creates Ingress SG (SDK).                                 |
-| ROSA CL   | M?           | M?         | TBD: API enabling feature(?); creates Ingress SG; updates `install-config`.     |
-| ROSA HCP  | M?           | M?         | TBD: API enabling feature(?); SG management; creates CIO manifests to enable SG.|
-| Day-2     | S            | M          | BYO SG (can managed services automate through CLI?), patch CIO to recreate NLB. |
-
-Risk:
-- Upstream CCM changes can take longer than expected (small changes may propagate downstream).
-- Default Ingress changes to ports 80 and 443 (if they occur) require manual SG rule updates.
-
-Day-2 update:
-- Self-managed: Requires the user to create SG and patch CIO.
-- Managed: Requires creating SG and patching CIO (can be automated via CLI).
-- Updates trigger service recreation of NLB.
-
-e2e PoC: https://github.com/openshift/installer/pull/9681
-
-**Phase 1: Create support on Self-Managed**
-
-Goals:
-- Installer manifest stage: When SG is enabled, set the security group names in the CIO manifest.
-- Installer infra stage: When SG is enabled, create the security group and rules for ingress (InfraReady hook).
-- Cluster-Ingress-Operator:
-  - API to receive the Security Group in the NLB parameters.
-  - Service Controller creates the annotation `service.beta.kubernetes.io/aws-load-balancer-security-groups` with the custom Security Group.
-- Enable support for BYO (unmanaged) Security Groups for AWS Cloud Controller Manager (CCM/cloud-provider-aws).
-
-**Phase 2: Create support on ROSA Classic**
-
-Goals:
-- TBD: How ROSA can enable the option in `install-config`: `platform.aws.ingressController.SecurityGroupEnabled`.
-
-**Phase 3: Create support on ROSA HCP**
-
-Goals:
-- TBD: Hypershift creates the ingress Security Group for the ingress (after VPC creation).
-- TBD: Hypershift sets the Security Group in CIO manifests.
-
----
-
-#### Option 2. Opt-in NLB provisioning with Security Groups for Default Ingress with FULL SG control by CCM <a name="goal-option-2"></a>
-
-Users will be able to deploy OpenShift on AWS with the default Ingress using Network Load Balancers with Security Groups when enabled (opt-in) in the `install-config.yaml`. CCM-AWS fully manages the SG lifecycle (similar to CLB, but as opt-in through annotation).
+Users will be able to deploy OpenShift on AWS with the default Ingress using Network Load Balancers with Security Groups when enabled (opt-in) by setting a configuration in the `install-config.yaml`. CIO creates the service manifest with new annotation to signalize CCM to create Security Group, and CCM-AWS fully manages the SG lifecycle (similar to CLB, but as opt-in through annotation).
 
 Highlights:
 - Focus on short-term resolution of security issues when not using SG on NLB.
@@ -166,130 +112,57 @@ Day-2 update:
 - Managed Services: Patch CIO.
 - Updates trigger service recreation of NLB.
 
+Open questions:
+- Considering this pattern is prefereble for security reasons, do we need a plan to enable this flow by default when using NLB?
+- Can we start deploying self-managed by default IPI with NLB? Is there blocking considering NLB is already a default flow? Classic is discontinued (not recommended to be used by AWS) from a long time.
 
-e2e PoC: N/A
+e2e PoC: https://github.com/openshift/installer/pull/9681
 
----
+Proposed Phases:
 
-#### Option 3. NLB feature parity on CCM with ALBC <a name="goal-option-3"></a>
+**Phase 1: Create support on Self-Managed**
 
-This option proposes to the NLB feature parity on CCM from [ALBC (AWS Load Balancer Controller)][albc]. This option requires Red Hat ownership and long-term commitment in the AWS Cloud Provider component (cloud-provider-aws), where the Load Balancer features have been "routed" to use ALBC to prevent overlap of code.
-
-This is equivalent of ["Solution 1: Leverage ALBO for NLBs in the future" of document "Supporting Security Groups for NLBs on AWS through Ingress on OCP"][eng-review-s1].
-
-Tentatively T-Shirt Sizing/complexity by component:
-
-| Component | T-Shirt Size | Complexity | Note                                                                      |
-|-----------|--------------|------------|---------------------------------------------------------------------------|
-| CCM       | XXL          | XXL        | NLB feature parity plan with ALBC. Long-term commitment and support by RH.|
-| CIO       | S            | S          | API adds SG ID/Name to service annotation.                                |
-| Installer | S            | S          | No SG management; API enabling feature.                                   |
-| ROSA CL   | S?           | S?         | No SG management; updates `install-config`.                               |
-| ROSA HCP  | S?           | S?         | No SG management; creates CIO manifests to "enable NLB with SG".          |
-| Day-2     | S            | S          | Patch CIO to recreate NLB.                                                |
-
-
-e2e PoC: N/A
-
-
-
----
-
-#### Option 4. Leverage ALBO for NLBs in the future <a name="goal-option-4"></a>
-
-This option suggests to switch cluster ingress operator to use ALBO/ALBC (AWS Load Balancer Operator/AWS Load Balancer Controller) of services used by the default Ingress on CIO (Cluster Ingress Operator).
-
-This is equivalent of [Solution 3: Become maintainers of the AWS CCM" of document "Supporting Security Groups for NLBs on AWS through Ingress on OCP"][eng-review-s1].
-
-Tentatively T-Shirt Sizing/complexity by component:
-
-| Component | T-Shirt Size | Complexity | Note                                                            |
-|-----------|--------------|------------|-----------------------------------------------------------------|
-| CCM       | -            | -          | CCM will not be used by the default router.                     |
-| CIO       | XXL          | XL         | API: (short-term) opt-in NLB provisioning with SG using ALBC; (long-term) all new provisioning with ALBC; move images to payload; manage operator lifecycle (permissions, etc.). |
-| Installer | S            | S          | No SG management; API enabling feature.                         |
-| ROSA CL   | S?           | S?         | No SG management; updates `install-config`.                     |
-| ROSA HCP  | S?           | S?         | No SG management; creates CIO manifests to "enable NLB with SG".|
-| Day-2     | S            | S          | Patch CIO to recreate NLB.                                      |
-
-
-e2e PoC: N/A
-
----
-
-#### Option 1+4. Short-term security fixes with long-term Ingress improvements <a name="goal-option-1-2-plus-4"></a>
-
-> Note: Can be 2+4 too, but this will impact resource investments in feature parity with CCM.
-
-In the short term, support NLB provisioning with Security Groups as opt-in by CCM, resolving security issues, and achieve long-term modernization by inheriting features added in the upstream ALBC project, which is actively maintained by AWS.
+Users will be able to deploy OpenShift on AWS with the default Ingress using Network Load Balancers with Security Groups when enabled (opt-in) in the `install-config.yaml`.
 
 Highlights:
-- Resolves short-term security issues when not using SG on NLB.
-- Improves customer scalability when enabling SG on NLB.
-- Moderate changes to CCM.
-- Provides a long-term plan to modernize Load Balancer features by inheriting updates from the controller in the upstream project maintained by the community (and AWS).
+- Focus on short-term resolution of security issues when not using SG on NLB.
+- Focus on customer scalability when enabling SG on NLB.
+- Minimal changes to CCM.
 
-T-Shirt Sizing/complexity by component:
-| Component | T-Shirt Size | Complexity | Note |
-|-----------|--------------|------------|------|
-| CCM       | S            | S          | No API changes, No SG management, Opt-in. |
-| CIO       | XXL          | XL         | API: (short-term) opt-in NLB provisioning with SG using ALBC; (long-term) all new provisioning with ALBC; move images to payload; manage operator lifecycle (permissions, etc.). |
-| Installer | S            | S          | API enabling feature; Creates Ingress SG (SDK). |
-| ROSA CL   | M?           | M?         | TBD: (short-term) API enabling feature(?); creates Ingress SG; updates `install-config`; (long-term) fixes many issues. |
-| ROSA HCP  | M?           | M?         | TBD: (short-term) API enabling feature(?); SG mgt; creates CIO manifests to enable SG; (long-term) fixes many issues. |
-| Day-2     | S            | M          | (short-term) BYO SG (can managed services automate through CLI?), (short-term & long-term) patch CIO to recreate NLB. |
+Goals:
+- Installer manifest stage: installwe updates the CIO manifests when SG is enabled with NLB, setting the "security group enabled" flag in the CIO manifest.
+- Cluster-Ingress-Operator:
+  - API to receive the Security Group managed flag in the NLB parameters.
+  - Controller creates the Service with annotation `service.beta.kubernetes.io/aws-load-balancer-manage-security-group:true`.
+- Cloud Controller Manager (CCM):
+  - Enable support of new annotation `service.beta.kubernetes.io/aws-load-balancer-manage-security-group:true` on creating service type Load Balancer NLB.
+  - Creates the Security Group instance, Ingress and Egress rules based in the NLB Listeners and Target Groups' ports
+  - Deletes the Security Group when the service is deleted
+  - Enhance tests for Load Balancer component
 
+**Phase 2: Create support on ROSA Classic**
 
-e2e PoC: N/A
+Goals:
+- TBD: Make ROSA Classic (Hive?) reads/reacts with new options in `install-config`: `platform.aws.ingressController.SecurityGroupEnabled`.
 
----
+**Phase 3: Create support on ROSA HCP**
 
-#### Summary
+Goals:
+- TBD: Hypershift sets the Service Annotation of Security Group when launching CIO.
+- TBD: HCP flow must explored to validate if the self-managed proposed covers it.
 
-
-| Option           | CCM   | CIO   | Installer | ROSA CL | ROSA HCP | Day-2 | Opt.ETA (SM) | Focus      |
-|------------------|-------|-------|-----------|---------|----------|-------|--------------|------------|
-| [Option 1][o1]   | S     | S     | M         | M?      | M?       | M     | 4.20         | Short-term |
-| [Option 2][o2]   | M     | S     | S         | S?      | S?       | S     | 4.20         | Short-term |
-| [Option 3][o3]   | XXL   | S     | S         | S?      | S?       | S     | 4.21+        | Long-term  |
-| [Option 4][o4]   | -     | XXL   | S         | S?      | S?       | S     | 4.21+        | Long-term  |
-| [Option 1+4][op] | S     | XXL   | M         | M?      | M?       | M     | 4.20+        | Short/Long |
-| [Option 2+4][op] | M     | XXL   | S         | M?      | M?       | S     | 4.20+        | Short/Long |
-| [Option 1+3][op] | XXL   | S     | M         | M?      | M?       | M     | 4.20+        | Short/Long |
-| [Option 2+3][op] | XXL   | S     | S         | M?      | M?       | S     | 4.20+        | Short/Long |
-
-[o1]: #goal-option-1
-[o2]: #goal-option-2
-[o3]: #goal-option-3
-[o4]: #goal-option-4
-[op]: #goal-option-1-2-plus-4
-
-[eng-review-s1]: https://docs.google.com/document/d/1nmNg722HPVg_oeihGCEkq0xvQW6NZ42f4wdJ5QJF4EM/edit?tab=t.0#heading=h.b4itjgannwla
-[eng-review-s3]: https://docs.google.com/document/d/1nmNg722HPVg_oeihGCEkq0xvQW6NZ42f4wdJ5QJF4EM/edit?tab=t.0#heading=h.t83kdo7niyo
-[albc]: https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/
-
-___
 ___
 
 ### Non-Goals
 
 > WIP
 
-Short-term:
+- Migrate to use ALBC as the default on CIO (See more in Alternatives).
+- Use NLB as the default service type LoadBalancer by CCM.
+- Synchronize all NLB features from ALBC to CCM.
+- Change the existing CCM flow when deploying NLB .
+- Change the default OpenShift install flow when deploying the default router using IPI (do we need to plan for that?).
 
-  - Migrate to use ALBC as the default on CIO (option 3 and 4 could be written in a new EP?).
-  - Use NLB as the default service type LoadBalancer by CCM.
-  - Synchronize all NLB features from ALBC to CCM.
-  - Change the existing CCM flow when deploying NLB .
-  - Change the current OpenShift e2e flow when deploying the default router using IPI (do we need to plan for that?).
-
-Long-term (new enhancement?):
-
-Long-term:
-
-  - TBD which one would be better/sustainable by Red Hat?:
-      - Use ALBC as default provisioner on CIO
-      - Feature parity between CCM and ALBC 
 
 ## Proposal
 
@@ -300,78 +173,105 @@ Long-term:
 
 > WIP
 
-#### Option 1. Workflow
+#### OpenShift Self-managed
 
-> WIP
+- Installer:
+  - Create `install-config.yaml` enabling the use of Security Group, example `platform.aws.ingressController.securityGroupEnabled`, **when** `lbType=NLB` (already exists).
+```yaml
+# install-config.yaml
+platform:
+  aws:
+    region: us-east-1
+    lbType: NLB           <-- what about to deprecate this field in favor of platform.aws.ingressController.loadBalancerType?
+    ingressController:            <-- proposing to aggregate CIO configurations
+      securityGroupEnabled: True  <-- new field
+[...]
+```
+  - The installer generates the CIO manifests: enabling LB type NLB, and flag to enable Security Group.
+```yaml
+# install-config.yaml
+$ yq ea . $INSTALL_DIR/manifests/cluster-ingress-default-ingresscontroller.yaml
+apiVersion: operator.openshift.io/v1
+kind: IngressController
+metadata:
+  creationTimestamp: null
+  name: default
+  namespace: openshift-ingress-operator
+spec:
+  clientTLS:
+    clientCA:
+      name: ""
+    clientCertificatePolicy: ""
+  endpointPublishingStrategy:
+    loadBalancer:
+      providerParameters:
+        aws:
+          networkLoadBalancer:
+            managedSecurityGroup: true   <-- new field
+          type: NLB
+        type: AWS
+      scope: External
+    type: LoadBalancerService
+[...]
+```
+- Cluster Ingress Operator (CIO):
+  - CIO creates the Service instance for the default router, filling a new annotation telling CCM to manage SGs.
+```yaml
+# Manifest for Service XYZ is created with annotations:
+apiVersion: v1
+kind: Service
+metadata:
+  name: echoserver
+  namespace: mrbraga
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+    service.beta.kubernetes.io/aws-load-balancer-managed-security-group: "true"
+[...]
+```
+- Cloud Controller Manager (CCM):
+  - CCM validates the annotation to manage SG on NLB, creates the SG and rules, and pass the SG ID to LB creation.
+  - The annotation `service.beta.kubernetes.io/aws-load-balancer-managed-security-group` (new) msut be set to `true`, then creates the SG with required rules for ingress (based on listeners) and egress (based on service and health check ports).
+  - CCM LB controller manages the SG lifecycle (controllers may exists in CLB).
 
-- Create `install-config.yaml` enabling:
-    - `lbType=NLB` (already exists), and
-    - use of Security Group(SG) (new API, suggested: `platform.aws.ingressController.SecurityGroupEnabled`).
-- The installer generates the cluster-ingress-operator(CIO) manifest for default ingress enabling LB type NLB, and passing Security Group **Name** (IDs are not known yet during the manifest phase).
-- The installer creates a security group to be used by the ingress controller during the `InfraReady` phase (post-CAPA).
-- CIO creates the service for the default router, filling in the annotations for NLB and SG **Name**.
-- CCM checks annotations, then when LB type NLB:
-    - if annotation (existing for CLB) "" is set: **maps Names to IDs** (new), then provisions the Load Balancer type NLB with the security group ID(new), updating instance SG swith required rules (existing flow for CLB).
 
+#### OpenShift Managed (TBD)
 
-Managed (TBD):
-
-- Classic:
+- ROSA Classic:
     - need to ensure install-config.yaml option writes the CIO manifests enabling NLB with SGs.
-    - (if Hive uses openshift-install to provision infra, no extra action)
 
-- HCP:
-    - need to ensure install-config.yaml option writes the CIO manifests enabling NLB with SGs.
-    - (hypershift? if not using openshift-install): need to evaluate if there is an post-infra hook to create the SG
-
-
-#### Option 2. Workflow CCM Manage SG
-
-> WIP
-
-Self-managed:
-
-- Create `install-config.yaml` enabling the use of Security Group **and** `lbType=NLB` (already exists).
-- The installer generates the CIO manifests: enabling LB type NLB.
-- CIO creates the service for the default router, filling a new annotation telling CCM to manage SGs.
-- CCM checks annotation to manage SG on NLB, creates the SG and rules, and pass the SG ID to LB creation. CCM controllers manages the SG lifecycle (controllers may exists in CLB).
-- CCM checks annotations, then when LB type NLB:
-  - if annotation `service.beta.kubernetes.io/aws-load-balancer-managed-security-group` (new) is set to `true`, then creates the SG with required rules for ingress (based on listeners) and egress (based on service and health check ports).
-
-Managed (TBD):
-
-- Classic:
+- ROSA HCP:
     - need to ensure install-config.yaml option writes the CIO manifests enabling NLB with SGs.
 
-- HCP:
-    - need to ensure install-config.yaml option writes the CIO manifests enabling NLB with SGs.
 
 ### API Extensions
 
 > WIP/TODO
 
-CIO:
+#### AWS Cloud Controller Manager (CCM)
+
+#### Cluster Ingress Operator (CIO)
 
 - FeatureGate TP
-- Receipt SG list on CIO
+- Receive an flag to enable Security Groups on Network Load Balancer structure
 
-Installer:
+#### Installer
 
-- "Enable" SG on install-config - only when deploying lbType=NLB
+- "Enable" Security Group on install-config path platform.aws.ingressController.EnableSecurityGroup - only when deploying platform.aws.lbType=NLB
 
-ROSA Classic:
+#### ROSA Classic
 
-- TBD. Is there any?
+- TBD the e2e flow
 
-Hypershift/ROSA HCP:
+#### Hypershift/ROSA HCP
 
-- TBD
+- TBD the e2e flow
 
 ### Topology Considerations
 
 #### Hypershift / Hosted Control Planes
 
-> WIP/TODO
+> TODO/TBD
 
 #### Standalone Clusters
 
@@ -382,27 +282,27 @@ All changes is proposed initially and exclusively for Standalone clusters.
 
 #### Single-node Deployments or MicroShift
 
-> WIP/TODO
+> TODO/TBD
 
 
 ### Implementation Details/Notes/Constraints
 
-> WIP/TODO
+> TODO/TBD
 
 ### Risks and Mitigations
 
-> WIP/TODO
+> TODO/TBD
 
 ### Drawbacks
 
-> WIP/TODO
+> TODO/TBD
 
 - the short-term would require more engineering effort to stabilize the 
 - depending the amount of changes in CCM, it will require more Red Hat engineering commmitment to maitain CCM
 
 ## Alternatives (Not Implemented)
 
-> WIP/TODO
+> TODO/TBD
 
 - Day-2 operations to use default router using ALBO/LBC (is it supported?)
 - 
@@ -418,9 +318,9 @@ All changes is proposed initially and exclusively for Standalone clusters.
 
 > WIP/TODO
 
-**machine-provider-aws**:
+**cloud-provider-aws**:
 
-- e2e BYO SG with NLB need to be implemented in the CCM component
+- e2e service Load Balancer type NLB with Security Groups (SG) needs to be implemented in the CCM component (upstream)
 
 **CIO**:
 
@@ -428,7 +328,7 @@ All changes is proposed initially and exclusively for Standalone clusters.
 
 **installer**:
 
-- job exercising e2e enabling SG with NLB need to be implemented in the installer component
+- job(dedicated?) exercising e2e enabling SG with NLB need to be implemented in the installer component
 
 **API**:
 
@@ -436,37 +336,37 @@ All changes is proposed initially and exclusively for Standalone clusters.
 
 ## Graduation Criteria
 
-> TODO: depends on the options. TBD
+> TODO/TBD: depends on the options.
 
 
 ### Dev Preview -> Tech Preview
 
-> TODO: depends on the options. TBD
+> TODO/TBD: depends on the options.
 
 ### Tech Preview -> GA
 
-> TODO: depends on the options. TBD
+> TODO/TBD: depends on the options.
 
 ### Removing a deprecated feature
 
-> TODO: depends on the options. TBD
+> TODO/TBD: depends on the options.
 
 ## Upgrade / Downgrade Strategy
 
-> TODO: depends on the options. TBD
+> TODO/TBD: depends on the options.
 
 ## Version Skew Strategy
 
-> TODO: depends on the options. TBD
+> TODO/TBD: depends on the options.
 
 ## Operational Aspects of API Extensions
 
-> TODO: depends on the options. TBD
+> TODO/TBD: depends on the options.
 
 ## Support Procedures
 
-> TODO: depends on the options. TBD
+> TODO/TBD: depends on the options.
 
 ## Infrastructure Needed [optional]
 
-> TODO: depends on the options. TBD
+> TODO/TBD: depends on the options.
