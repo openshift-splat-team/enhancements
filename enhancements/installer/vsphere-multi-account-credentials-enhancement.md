@@ -1278,6 +1278,50 @@ func (a *VSphereActuator) GetCredentialsForComponent(
 }
 ```
 
+### Feature Gate
+
+This feature is gated behind the `VSphereMultiAccountCredentials` feature gate. The feature gate controls whether the per-component credential management functionality is active in the cluster.
+
+#### Feature Gate Definition
+
+The `VSphereMultiAccountCredentials` feature gate is defined in `openshift/api` under `features/features.go`:
+
+```go
+FeatureGateVSphereMultiAccountCredentials = newFeatureGate("VSphereMultiAccountCredentials").
+    reportProblemsToJiraComponent("cloud-credential-operator").
+    contactPerson("rvanderp").
+    productScope(ocpSpecific).
+    enableIn(TechPreviewNoUpgrade, DevPreviewNoUpgrade).
+    mustRegister()
+```
+
+API fields introduced by this enhancement (`VSpherePlatformSpec.CredentialsMode`, `VSpherePlatformSpec.ComponentCredentials`, and the `VCenterComponentCredentials` structure in install-config) are annotated with `+openshift:enable:FeatureGate=VSphereMultiAccountCredentials`. When the feature gate is not enabled, these fields are stripped from API responses and rejected on admission.
+
+#### Behavior When Feature Gate Is Disabled
+
+When `VSphereMultiAccountCredentials` is not enabled (the default in the `Default` feature set):
+
+- The `credentialsMode` and `componentCredentials` fields on `VSpherePlatformSpec` are not accepted by the API server.
+- CCO operates exclusively in Passthrough mode, using the single shared credential (`kube-system/vsphere-creds`) for all components.
+- The installer does not read or process `componentCredentials` from install-config.yaml or `~/.vsphere/credentials`.
+- Existing clusters continue to function with no behavioral change.
+
+#### Behavior When Feature Gate Is Enabled
+
+When `VSphereMultiAccountCredentials` is enabled (via `TechPreviewNoUpgrade` or `DevPreviewNoUpgrade` feature sets during Tech Preview, or the `Default` feature set after GA promotion):
+
+- The `credentialsMode` and `componentCredentials` fields are accepted on `VSpherePlatformSpec`.
+- Administrators can configure per-component credentials as described in this enhancement.
+- CCO supports both `Passthrough` and `PerComponent` credential modes.
+- The installer reads and processes `componentCredentials` from install-config.yaml and `~/.vsphere/credentials`.
+
+#### Graduation Plan
+
+| Phase | Feature Set | Behavior |
+|-------|-------------|----------|
+| Tech Preview | `TechPreviewNoUpgrade`, `DevPreviewNoUpgrade` | Feature gate enabled; per-component credentials available for evaluation and testing. No upgrade support. |
+| GA | `Default` | Feature gate promoted to `Default` feature set; per-component credentials available on all clusters with full upgrade/downgrade support. |
+
 ### Risks and Mitigations
 
 | Risk | Mitigation |
@@ -1387,18 +1431,26 @@ func (a *VSphereActuator) GetCredentialsForComponent(
 
 ### Dev Preview -> Tech Preview
 
-- Per-component credential configuration supported
-- Privilege validation implemented
+- `VSphereMultiAccountCredentials` feature gate enabled in `TechPreviewNoUpgrade` and `DevPreviewNoUpgrade` feature sets
+- Per-component credential configuration supported behind the feature gate
+- API fields gated with `+openshift:enable:FeatureGate=VSphereMultiAccountCredentials`
+- Privilege validation implemented in vsphere-problem-detector
 - Documentation for creating roles/accounts
 - Scripts for govc and PowerCLI
+- Sufficient test coverage (unit and integration)
+- Gather feedback from users rather than just developers
 
 ### Tech Preview -> GA
 
-- E2E tests in CI
+- Promote `VSphereMultiAccountCredentials` feature gate to the `Default` feature set
+- E2E tests in CI passing reliably
 - Tested on vSphere 7.0 and 8.0
-- User documentation in openshift-docs
+- Upgrade and downgrade testing (Passthrough ↔ PerComponent transitions)
+- User-facing documentation created in [openshift-docs](https://github.com/openshift/openshift-docs/)
 - Migration guide from passthrough mode
 - Support runbook
+- Sufficient time for Tech Preview feedback
+- No P0/P1 bugs outstanding
 
 ## Upgrade / Downgrade Strategy
 
