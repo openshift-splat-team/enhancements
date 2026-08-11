@@ -27,7 +27,7 @@ superseded-by: []
 
 ## Summary
 
-This enhancement proposes support for administrator-provisioned, component-specific vCenter credentials for OpenShift on vSphere. Rather than having the cloud-credential-operator (CCO) create vCenter accounts (which would require administrative privileges), this enhancement enables administrators to pre-provision separate vCenter service accounts for each OpenShift component and provide those credentials to OpenShift. CCO validates the credentials have sufficient privileges and distributes them to the appropriate components. This approach supports enterprise security requirements where account provisioning is controlled by infrastructure teams, while still achieving least-privilege isolation between components.
+This enhancement proposes support for administrator-provisioned, component-specific vCenter credentials for OpenShift on vSphere. Rather than having the cloud-credential-operator (CCO) create vCenter accounts (which would require administrative privileges), this enhancement enables administrators to pre-provision separate vCenter service accounts for each OpenShift component and provide those credentials to OpenShift. CCO distributes the credentials to the appropriate components, while the vsphere-problem-detector validates that credentials have sufficient privileges. This approach supports enterprise security requirements where account provisioning is controlled by infrastructure teams, while still achieving least-privilege isolation between components.
 
 ## Motivation
 
@@ -72,7 +72,7 @@ This conflicts with enterprise security practices where:
 
 * As a **vSphere administrator**, I want to create vCenter service accounts with specific privileges for each OpenShift component, following my organization's account provisioning procedures, and then configure OpenShift to use these accounts.
 
-* As a **platform operator**, I want OpenShift to validate that each component's credentials have the required privileges before accepting them, so that I can catch configuration errors during deployment rather than at runtime.
+* As a **platform operator**, I want OpenShift to validate that each component's credentials have the required privileges, so that I can catch configuration errors during deployment rather than at runtime.
 
 * As a **security team member**, I want documentation of exactly what privileges each OpenShift component requires, so that I can create appropriately-scoped vCenter roles and accounts before cluster deployment.
 
@@ -84,13 +84,9 @@ This conflicts with enterprise security practices where:
 
 2. **Document precise privilege requirements:** Provide authoritative documentation of privileges required by each component, organized by vSphere object scope.
 
-3. **Validate credential privileges:** CCO validates that provided credentials have sufficient privileges for the component's operations.
+3. **Enable independent credential rotation:** Support updating credentials for one component without affecting others.
 
-4. **Provide tooling for role/account creation:** Offer scripts and documentation for creating vCenter roles and accounts with correct privileges.
-
-5. **Enable independent credential rotation:** Support updating credentials for one component without affecting others.
-
-6. **Maintain backward compatibility:** Continue supporting single shared credential (passthrough mode) for simpler deployments.
+4. **Maintain backward compatibility:** Continue supporting single shared credential (passthrough mode) for simpler deployments.
 
 ### Non-Goals
 
@@ -104,6 +100,8 @@ This conflicts with enterprise security practices where:
 
 5. **Runtime privilege discovery:** Automatic detection of what privileges a component actually uses is not in scope.
 
+6. **Provide tooling for role/account creation:** Offering scripts and documentation for creating vCenter roles and accounts with correct privileges is outside the scope of this enhancement.
+
 ## Proposal
 
 ### Overview
@@ -112,10 +110,8 @@ This enhancement extends OpenShift to support administrator-provisioned, per-com
 
 1. **Credential storage:** Credentials are stored in install-config.yaml or a hidden file in the user's home directory (`~/.vsphere/credentials`)
 2. **Multi-vCenter support:** Each component can have separate credentials for each vCenter in a multi-vCenter topology
-3. **Privilege validation:** CCO validates credentials have required privileges before provisioning to components
-4. **CredentialsRequest specifications:** Define precise privilege requirements per component
-5. **Tooling and documentation:** Provide scripts to create vCenter roles matching component requirements
-6. **Graceful degradation:** Fall back to shared credentials if per-component credentials not provided
+3. **CredentialsRequest specifications:** Define precise privilege requirements per component
+4. **Graceful degradation:** Fall back to shared credentials if per-component credentials not provided
 
 ### Component Architecture
 
@@ -279,36 +275,46 @@ platform:
 
 The cluster administrator creates a credentials file at `~/.vsphere/credentials`:
 
-```ini
+```yaml
 # ~/.vsphere/credentials
 # Supports per-vCenter, per-component credentials
 
-[vcenter1.example.com]
-# Default credentials (used by installer)
-user = ocp-installer@vsphere.local
-password = <installer-password>
+vcenter1.example.com:
+  # Default credentials (used by installer)
+  user: ocp-installer@vsphere.local
+  password: <installer-password>
 
-# Per-component credentials
-machine-api.user = ocp-machine-api@vsphere.local
-machine-api.password = <machine-api-password>
-csi-driver.user = ocp-csi@vsphere.local
-csi-driver.password = <csi-password>
-cloud-controller.user = ocp-ccm@vsphere.local
-cloud-controller.password = <ccm-password>
-diagnostics.user = ocp-diagnostics@vsphere.local
-diagnostics.password = <diagnostics-password>
+  # Per-component credentials
+  componentCredentials:
+    machineAPI:
+      user: ocp-machine-api@vsphere.local
+      password: <machine-api-password>
+    csiDriver:
+      user: ocp-csi@vsphere.local
+      password: <csi-password>
+    cloudController:
+      user: ocp-ccm@vsphere.local
+      password: <ccm-password>
+    diagnostics:
+      user: ocp-diagnostics@vsphere.local
+      password: <diagnostics-password>
 
-[vcenter2.example.com]
-user = ocp-installer@vsphere.local
-password = <installer-password-vc2>
-machine-api.user = ocp-machine-api@vsphere.local
-machine-api.password = <machine-api-password-vc2>
-csi-driver.user = ocp-csi@vsphere.local
-csi-driver.password = <csi-password-vc2>
-cloud-controller.user = ocp-ccm@vsphere.local
-cloud-controller.password = <ccm-password-vc2>
-diagnostics.user = ocp-diagnostics@vsphere.local
-diagnostics.password = <diagnostics-password-vc2>
+vcenter2.example.com:
+  user: ocp-installer@vsphere.local
+  password: <installer-password-vc2>
+  componentCredentials:
+    machineAPI:
+      user: ocp-machine-api@vsphere.local
+      password: <machine-api-password-vc2>
+    csiDriver:
+      user: ocp-csi@vsphere.local
+      password: <csi-password-vc2>
+    cloudController:
+      user: ocp-ccm@vsphere.local
+      password: <ccm-password-vc2>
+    diagnostics:
+      user: ocp-diagnostics@vsphere.local
+      password: <diagnostics-password-vc2>
 ```
 
 The installer reads from `~/.vsphere/credentials` when:
@@ -323,17 +329,18 @@ The installer reads from `~/.vsphere/credentials` when:
    b. Each Secret contains keys in the format `<vcenter-server>.username` / `<vcenter-server>.password` for every vCenter in the topology.
    c. The Secrets are owned by the `Infrastructure` resource (`metadata.ownerReferences`) so that cluster lifecycle operations (e.g., destroy) clean them up.
 3. The installer sets `spec.platformSpec.vsphere.credentialsMode` to `PerComponent` on the `Infrastructure/cluster` resource and populates the `componentCredentials` field with `SecretReference` entries pointing to each created Secret (name + namespace).
-4. CCO reconciles the `Infrastructure` resource, reads each referenced Secret, and validates that the credentials have the required privileges on each vCenter (see [Credential Validation Workflow](#credential-validation-workflow)).
-5. If validation fails, CCO reports which privileges are missing and on which vCenter via `CredentialsProvisionFailed` conditions on the relevant `CredentialsRequest`.
-6. On successful validation, CCO copies validated credentials into target-namespace Secrets consumed by each component (preserving the existing cluster-storage-operator → CVO → CSI operator cloud-credentials contract where applicable).
-7. Components start using their designated credentials.
+4. CCO reconciles the `Infrastructure` resource, reads each referenced Secret, and verifies connectivity to each vCenter (see [Credential Distribution Workflow](#credential-distribution-workflow)).
+5. If connectivity verification fails, CCO reports the failure via `CredentialsProvisionFailed` conditions on the relevant `CredentialsRequest`.
+6. On successful verification, CCO copies credentials into target-namespace Secrets consumed by each component (preserving the existing cluster-storage-operator → CVO → CSI operator cloud-credentials contract where applicable).
+7. The `vsphere-problem-detector` independently validates that each component's credentials have the required privileges for their operations.
+8. Components start using their designated credentials.
 
 **Secret Lifecycle:**
 
 - **Ownership:** The `openshift-config` Secrets are owned by the `Infrastructure/cluster` resource. Component-namespace copies (e.g., `openshift-machine-api/vsphere-cloud-credentials`) are owned by the corresponding `CredentialsRequest`.
-- **Update:** When an administrator updates a Secret in `openshift-config`, CCO detects the change via a watch, re-validates privileges, and propagates the updated credentials to component namespaces.
-- **Rotation:** Administrators rotate credentials by updating the `openshift-config` Secret with new values. CCO re-validates and distributes without component restart; components pick up new credentials on the next vCenter session reconnect.
-- **Rollback:** If updated credentials fail validation, CCO retains the last-known-good credentials in the component namespace and sets a `CredentialsProvisionFailed` condition. The administrator can revert the `openshift-config` Secret to restore the previous credentials.
+- **Update:** When an administrator updates a Secret in `openshift-config`, CCO detects the change via a watch and propagates the updated credentials to component namespaces.
+- **Rotation:** Administrators rotate credentials by updating the `openshift-config` Secret with new values. CCO distributes without component restart; components pick up new credentials on the next vCenter session reconnect. The vsphere-problem-detector validates that updated credentials have sufficient privileges.
+- **Rollback:** If updated credentials fail connectivity verification, CCO retains the last-known-good credentials in the component namespace and sets a `CredentialsProvisionFailed` condition. The administrator can revert the `openshift-config` Secret to restore the previous credentials.
 
 #### Alternative: Post-Installation Configuration
 
@@ -384,21 +391,20 @@ For existing clusters migrating to per-component credentials:
    ```
 3. CCO reconciles the new configuration and distributes credentials to components
 
-#### Credential Validation Workflow
+#### Credential Distribution Workflow
 
 When CCO receives credentials for a component (per vCenter):
 
 0. CCO reads referenced Secrets exclusively from the `openshift-config` namespace. If a `SecretReference` points to any other namespace, CCO rejects it immediately and sets `CredentialsProvisionFailed` without attempting to read the Secret.
 1. For each vCenter configured in the cluster:
    a. CCO extracts the component credentials for that vCenter
-   b. CCO connects to the vCenter using the provided credentials
-   c. CCO calls `AuthorizationManager.FetchUserPrivilegeOnEntities()` on relevant objects
-   d. CCO compares returned privileges against required privileges for the component
-2. If all required privileges are present on all vCenters, CCO provisions the credential to the component
-3. If privileges are missing on any vCenter, CCO:
+   b. CCO connects to the vCenter using the provided credentials to verify connectivity
+2. If connectivity is confirmed on all vCenters, CCO provisions the credential to the component
+3. If connectivity fails on any vCenter, CCO:
    - Sets condition `CredentialsProvisionFailed` on the CredentialsRequest
-   - Logs detailed message listing missing privileges and the vCenter(s) affected
-   - Does NOT provision incomplete credentials
+   - Logs detailed message identifying which vCenter(s) failed authentication
+
+**Note:** Privilege validation is **not** performed by CCO. The `vsphere-problem-detector` is responsible for checking that credentials have sufficient privileges for their intended operations. CCO's role is limited to credential distribution and basic connectivity verification.
 
 ### API Extensions
 
@@ -499,39 +505,45 @@ stringData:
   fd00-0000-0000-0000-0000-0000-0000-0001.password: "secret"
 ```
 
-The installer and CCO both apply the same normalization when reading and writing Secret keys. The `~/.vsphere/credentials` file sections use the original `VCenter.Server` value (e.g., `[fd00::1]`); the installer normalizes when creating Secrets.
+The installer and CCO both apply the same normalization when reading and writing Secret keys. The `~/.vsphere/credentials` file entries use the original `VCenter.Server` value as the top-level YAML key (e.g., `fd00::1`); the installer normalizes when creating Secrets.
 
 #### ~/.vsphere/credentials File Format
 
-The credentials file follows an INI-style format with per-vCenter sections:
+The credentials file follows a YAML format with per-vCenter entries, consistent with install-config.yaml:
 
-```ini
+```yaml
 # ~/.vsphere/credentials
 # File permissions should be 0600 (readable only by owner)
 
-# Section name is the vCenter server FQDN or IP
-[vcenter1.example.com]
-# Default credentials (used by installer and as fallback)
-user = admin-user@vsphere.local
-password = secret-password
+# Each top-level key is a vCenter server FQDN or IP
+vcenter1.example.com:
+  # Default credentials (used by installer and as fallback)
+  user: admin-user@vsphere.local
+  password: secret-password
 
-# Per-component credentials (optional)
-# Format: component-name.user and component-name.password
-machine-api.user = ocp-machine-api@vsphere.local
-machine-api.password = machine-api-password
-csi-driver.user = ocp-csi@vsphere.local
-csi-driver.password = csi-password
-cloud-controller.user = ocp-ccm@vsphere.local
-cloud-controller.password = ccm-password
-diagnostics.user = ocp-diagnostics@vsphere.local
-diagnostics.password = diagnostics-password
+  # Per-component credentials (optional)
+  componentCredentials:
+    machineAPI:
+      user: ocp-machine-api@vsphere.local
+      password: machine-api-password
+    csiDriver:
+      user: ocp-csi@vsphere.local
+      password: csi-password
+    cloudController:
+      user: ocp-ccm@vsphere.local
+      password: ccm-password
+    diagnostics:
+      user: ocp-diagnostics@vsphere.local
+      password: diagnostics-password
 
-[vcenter2.example.com]
-user = admin-user@vsphere.local
-password = secret-password-vc2
-machine-api.user = ocp-machine-api@vsphere.local
-machine-api.password = machine-api-password-vc2
-# ... other components
+vcenter2.example.com:
+  user: admin-user@vsphere.local
+  password: secret-password-vc2
+  componentCredentials:
+    machineAPI:
+      user: ocp-machine-api@vsphere.local
+      password: machine-api-password-vc2
+    # ... other components
 ```
 
 The installer reads credentials in this order of precedence:
@@ -691,10 +703,10 @@ type VSpherePermissionScope struct {
 }
 ```
 
-**Privilege validation behavior:**
+**Privilege validation behavior (vsphere-problem-detector):**
 
-- When `Propagate` is `true` in a `VSpherePermission`, CCO does **not** pass `Propagate` to `FetchUserPrivilegeOnEntities` (which does not accept it). Instead, CCO validates privileges on representative child objects (e.g., for a Folder scope with propagation, CCO checks both the folder and a child VM or subfolder) or inspects the permission assignment on the parent to confirm `propagate=true` is set.
-- When `InferFromClusterConfig` is `true`, CCO iterates all failure domains in the `Infrastructure` resource, resolves each to the relevant vSphere object (datacenter, cluster, folder, datastore, network), and validates privileges on every resolved target.
+- When `Propagate` is `true` in a `VSpherePermission`, the vsphere-problem-detector does **not** pass `Propagate` to `FetchUserPrivilegeOnEntities` (which does not accept it). Instead, it validates privileges on representative child objects (e.g., for a Folder scope with propagation, it checks both the folder and a child VM or subfolder) or inspects the permission assignment on the parent to confirm `propagate=true` is set.
+- When `InferFromClusterConfig` is `true`, the vsphere-problem-detector iterates all failure domains in the `Infrastructure` resource, resolves each to the relevant vSphere object (datacenter, cluster, folder, datastore, network), and validates privileges on every resolved target.
 
 ### Privilege Requirements by Component
 
@@ -970,30 +982,35 @@ cat > "$CREDS_FILE" << 'EOF'
 # Generated by generate-vsphere-credentials.sh
 # File permissions: 0600 (readable only by owner)
 
-# Add a section for each vCenter server
-# Format: [vcenter-fqdn-or-ip]
+# Each top-level key is a vCenter server FQDN or IP
+vcenter1.example.com:
+  # Default credentials (used by installer)
+  user: ocp-installer@vsphere.local
+  password: REPLACE_WITH_INSTALLER_PASSWORD
 
-[vcenter1.example.com]
-# Default credentials (used by installer)
-user = ocp-installer@vsphere.local
-password = REPLACE_WITH_INSTALLER_PASSWORD
-
-# Per-component credentials
-machine-api.user = ocp-machine-api@vsphere.local
-machine-api.password = REPLACE_WITH_MACHINE_API_PASSWORD
-csi-driver.user = ocp-csi@vsphere.local
-csi-driver.password = REPLACE_WITH_CSI_PASSWORD
-cloud-controller.user = ocp-ccm@vsphere.local
-cloud-controller.password = REPLACE_WITH_CCM_PASSWORD
-diagnostics.user = ocp-diagnostics@vsphere.local
-diagnostics.password = REPLACE_WITH_DIAGNOSTICS_PASSWORD
+  # Per-component credentials
+  componentCredentials:
+    machineAPI:
+      user: ocp-machine-api@vsphere.local
+      password: REPLACE_WITH_MACHINE_API_PASSWORD
+    csiDriver:
+      user: ocp-csi@vsphere.local
+      password: REPLACE_WITH_CSI_PASSWORD
+    cloudController:
+      user: ocp-ccm@vsphere.local
+      password: REPLACE_WITH_CCM_PASSWORD
+    diagnostics:
+      user: ocp-diagnostics@vsphere.local
+      password: REPLACE_WITH_DIAGNOSTICS_PASSWORD
 
 # Add additional vCenters as needed:
-# [vcenter2.example.com]
-# user = ...
-# password = ...
-# machine-api.user = ...
-# ...
+# vcenter2.example.com:
+#   user: ...
+#   password: ...
+#   componentCredentials:
+#     machineAPI:
+#       user: ...
+#       password: ...
 EOF
 
 echo "Credentials template created at $CREDS_FILE"
@@ -1127,7 +1144,7 @@ OpenShift supports spanning multiple vCenters using failure domains. This enhanc
      vcenter2.example.com.password: "password2"
    ```
 
-5. **Credentials File Format:** The `~/.vsphere/credentials` file similarly organizes credentials by vCenter with per-component entries under each vCenter section.
+5. **Credentials File Format:** The `~/.vsphere/credentials` YAML file similarly organizes credentials by vCenter with per-component entries under each vCenter key.
 
 ### Topology Considerations
 
@@ -1157,10 +1174,13 @@ Compatible with OKE; does not depend on OCP-specific features beyond CCO.
 
 ### Implementation Details/Notes/Constraints
 
-#### Privilege Validation Implementation
+#### Privilege Validation Implementation (vsphere-problem-detector)
+
+Privilege validation is performed by the `vsphere-problem-detector`, not CCO. The following illustrates how the vsphere-problem-detector checks privileges:
 
 ```go
-// ValidateCredentialPrivileges checks that credentials have required privileges
+// ValidateCredentialPrivileges checks that credentials have required privileges.
+// This validation is performed by the vsphere-problem-detector.
 func (a *VSphereActuator) ValidateCredentialPrivileges(
     ctx context.Context,
     creds *corev1.Secret,
@@ -1262,7 +1282,7 @@ func (a *VSphereActuator) GetCredentialsForComponent(
 
 | Risk | Mitigation |
 |------|------------|
-| Administrator provides insufficient privileges | CCO validates privileges per vCenter and reports specific missing privileges |
+| Administrator provides insufficient privileges | vsphere-problem-detector validates privileges per vCenter and reports specific missing privileges |
 | Complex setup burden on administrators | Provide scripts (govc, PowerCLI) and detailed documentation |
 | Credential secrets accidentally deleted | Standard Kubernetes secret backup practices; CCO recreates from source |
 | vCenter version has different privilege names | Use pruneToAvailablePermissions pattern; validate against actual vCenter |
@@ -1330,9 +1350,7 @@ func (a *VSphereActuator) GetCredentialsForComponent(
 
 ## Open Questions
 
-1. **Credentials File Format:** Should the `~/.vsphere/credentials` file use INI format (as proposed) or YAML for consistency with install-config.yaml?
-
-2. **Validation Frequency:** Should CCO re-validate privileges periodically, or only on secret changes?
+1. **Validation Frequency:** How often should the vsphere-problem-detector re-validate privileges — periodically, or only on secret changes?
 
 3. **Partial Configuration:** If only some component credentials are provided, should CCO use per-component for those and passthrough for others?
 
@@ -1403,7 +1421,7 @@ func (a *VSphereActuator) GetCredentialsForComponent(
 - The per-component Secrets in `openshift-config` (e.g., `vsphere-creds-machine-api`) are **not** automatically deleted during downgrade. CCO leaves them in place so that the administrator can re-enable PerComponent mode without re-creating Secrets.
 - CCO removes the `componentCredentials` field from the `Infrastructure` spec only when the administrator explicitly clears it. Until then, the references remain as documentation of the previous configuration.
 - The administrator is responsible for deleting unused per-component Secrets when they are no longer needed. The support procedures section provides commands for identifying and removing these Secrets.
-- If the administrator re-enables PerComponent mode before deleting the Secrets, CCO re-validates the existing credentials and resumes per-component distribution without data loss.
+- If the administrator re-enables PerComponent mode before deleting the Secrets, CCO verifies connectivity for the existing credentials and resumes per-component distribution without data loss.
 
 **Rollback safety:**
 
@@ -1425,8 +1443,8 @@ func (a *VSphereActuator) GetCredentialsForComponent(
 
 ### Impact on SLIs
 
-- Minimal additional vCenter API calls for privilege validation
-- Validation occurs once per secret change, not continuously
+- Minimal additional vCenter API calls for credential distribution and connectivity verification
+- The vsphere-problem-detector performs privilege validation as part of its existing checks
 
 ### Failure Modes
 
