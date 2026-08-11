@@ -1322,6 +1322,198 @@ When `VSphereMultiAccountCredentials` is enabled (via `TechPreviewNoUpgrade` or 
 | Tech Preview | `TechPreviewNoUpgrade`, `DevPreviewNoUpgrade` | Feature gate enabled; per-component credentials available for evaluation and testing. No upgrade support. |
 | GA | `Default` | Feature gate promoted to `Default` feature set; per-component credentials available on all clusters with full upgrade/downgrade support. |
 
+## Implementation Plan
+
+This section outlines the phased approach to implementing vSphere multi-account credential management across the OpenShift ecosystem. Each phase builds on prior deliverables, and repositories are identified for each phase.
+
+### Phase 0: API Foundation
+
+**Description:** Establish the API types and feature gate that all subsequent phases depend on.
+
+**Key Deliverables:**
+- Register `VSphereMultiAccountCredentials` feature gate in `features/features.go`, initially enabled in `TechPreviewNoUpgrade` and `DevPreviewNoUpgrade` feature sets
+- Add `VSphereCredentialsMode` enum type with `Passthrough` and `PerComponent` values
+- Add `VSphereComponentCredentials` struct with `SecretReference` fields for `MachineAPI`, `CSIDriver`, `CloudController`, and `Diagnostics`
+- Add `SecretReference` type with namespace restricted to `openshift-config` via kubebuilder validation
+- Add `VSpherePermissionScope` type for privilege scope declarations
+- Extend `VSpherePlatformSpec` with `CredentialsMode` and `ComponentCredentials` fields
+- Annotate all new fields with `+openshift:enable:FeatureGate=VSphereMultiAccountCredentials`
+- Add generated deepcopy methods and OpenAPI schema updates
+
+**Repository:** openshift/api
+
+**Dependencies:** None (foundational phase)
+
+**Estimated Complexity:** Moderate — primarily type definitions and feature gate registration, but requires coordination with API reviewers and generated code updates.
+
+### Phase 1: Installer Support
+
+**Description:** Extend the installer to accept per-component credentials and create the corresponding Kubernetes Secrets during cluster bootstrap.
+
+**Key Deliverables:**
+- Extend install-config `VCenter` struct to accept `componentCredentials` per vCenter entry
+- Implement reading of per-component credentials from `~/.vsphere/credentials` and `VSPHERE_CREDENTIALS_FILE`
+- Implement canonical vCenter key generation with correct normalization for FQDNs, IPv4, and IPv6 addresses (bracket stripping, full expansion, colon-to-dash replacement, non-default port appending)
+- Create named Secrets in `openshift-config` namespace during cluster bootstrap (e.g., `vsphere-creds-machine-api`, `vsphere-creds-csi-driver`, `vsphere-creds-cloud-controller`, `vsphere-creds-diagnostics`)
+- Set Secret ownership via `metadata.ownerReferences` to the `Infrastructure/cluster` resource
+- Populate `Infrastructure/cluster` spec with `credentialsMode: PerComponent` and `componentCredentials` pointing to the created Secrets
+- Validate componentCredentials references and vCenter connectivity at install time
+- Validate `~/.vsphere/credentials` file permissions (must be 0600)
+- Support credential precedence: install-config.yaml > VSPHERE_CREDENTIALS_FILE > ~/.vsphere/credentials
+
+**Repository:** openshift/installer
+
+**Dependencies:** Phase 0 (API types and feature gate must be merged)
+
+**Estimated Complexity:** Primary development effort — credential handoff logic, key normalization, file-format parsing, and multi-vCenter support require significant implementation and testing.
+
+### Phase 2: Cloud Credential Operator (CCO)
+
+**Description:** Implement PerComponent credential mode in CCO to distribute administrator-provisioned credentials to component namespaces.
+
+**Key Deliverables:**
+- Implement `PerComponent` credentialsMode handling in the CCO vSphere actuator
+- Implement `GetCredentialsForComponent` with explicit mode-based logic: PerComponent mode requires per-component credentials (no fallback to root); Passthrough mode (explicit or default) uses the root credential
+- Read per-component `SecretReference` entries from `Infrastructure/cluster` spec
+- Enforce that all `SecretReference` entries point to the `openshift-config` namespace; reject references to other namespaces with `CredentialsProvisionFailed`
+- Distribute per-component credentials to target namespace Secrets (e.g., `openshift-machine-api/vsphere-cloud-credentials`)
+- Validate vCenter connectivity for each credential set on each vCenter in the topology
+- Watch for Secret updates in `openshift-config` and propagate changes to component namespaces
+- Report per-vCenter authentication failures via `CredentialsProvisionFailed` conditions on `CredentialsRequest` resources
+- Support graceful downgrade from PerComponent to Passthrough mode (revert to distributing root credential)
+
+**Repository:** openshift/cloud-credential-operator
+
+**Dependencies:** Phase 0 (API types), Phase 1 (installer creates the source Secrets and sets Infrastructure CR fields)
+
+**Estimated Complexity:** Primary development effort — credential distribution, mode switching, connectivity validation, and Secret watching are core CCO changes.
+
+### Phase 3: vsphere-problem-detector Updates
+
+**Description:** Extend the vsphere-problem-detector to validate per-component credential privilege sets against the requirements defined in this enhancement.
+
+**Key Deliverables:**
+- Extend privilege validation to support per-component credential sets in addition to the existing shared-credential checks
+- Validate each component's credentials against their specific privilege requirements:
+  - Installer: ~45 privileges (full set as defined in `installer/pkg/asset/installconfig/vsphere/permissions.go`)
+  - Machine API: ~35 privileges (VM lifecycle, tagging, datastore, network)
+  - CSI Driver: ~10-15 privileges (storage operations, CNS)
+  - Cloud Controller Manager: ~10 privileges (read-only: node discovery, zone topology)
+  - Diagnostics: ~5 privileges (read-only: session, system read, datastore browse)
+- Validate privileges per vCenter when multiple vCenters are configured (iterate failure domains)
+- Support `InferFromClusterConfig` scope resolution: resolve target objects from the cluster's failure domain configuration
+- Validate privilege propagation by checking representative child objects or inspecting permission assignments
+- Report per-component validation status via conditions and metrics
+- Use `pruneToAvailablePermissions` pattern to handle privilege name differences across vCenter versions
+
+**Repository:** openshift/vsphere-problem-detector
+
+**Dependencies:** Phase 0 (API types for VSpherePermissionScope), Phase 2 (CCO distributes credentials that vsphere-problem-detector validates)
+
+**Estimated Complexity:** Moderate to high — privilege validation logic per component is well-defined, but multi-vCenter iteration and scope resolution add complexity.
+
+### Phase 4: Component Consumers
+
+**Description:** Update each vSphere-consuming component to retrieve credentials via CCO's GetCredentialsForComponent mechanism.
+
+**Key Deliverables:**
+- **machine-api-operator:** Update credential retrieval to read from the dedicated per-component Secret (`openshift-machine-api/vsphere-cloud-credentials`) when populated by CCO in PerComponent mode. Fall back gracefully when the feature gate is disabled (continue using the shared credential path).
+- **vmware-vsphere-csi-driver:** Update credential retrieval to read from the per-component Secret for CSI operations. Ensure the existing cluster-storage-operator > CVO > CSI operator cloud-credentials contract is preserved.
+- **cloud-provider-vsphere (CCM):** Update credential retrieval for the cloud controller manager to use per-component credentials. CCM is read-only so this is primarily a credential source change.
+- Each component picks up new credentials on the next vCenter session reconnect without requiring a pod restart.
+- Each component operates normally with shared credentials when the feature gate is disabled or credentialsMode is Passthrough.
+
+**Repositories:** openshift/machine-api-operator, openshift/vmware-vsphere-csi-driver, openshift/cloud-provider-vsphere
+
+**Dependencies:** Phase 2 (CCO must be distributing per-component credentials before consumers can use them)
+
+**Estimated Complexity:** Integration work — each consumer change is relatively small (credential source path), but must be validated independently for correct behavior in both PerComponent and Passthrough modes.
+
+### Phase 5: Tooling and Documentation
+
+**Description:** Provide administrator-facing tooling and documentation for creating vCenter roles, accounts, and managing per-component credentials.
+
+**Key Deliverables:**
+- Administrator documentation for creating vCenter roles with minimum privileges per component
+- govc scripts for multi-vCenter role creation (as outlined in the Tooling for Administrators section)
+- PowerCLI scripts for role creation in Windows-centric environments
+- Credential generation script template for `~/.vsphere/credentials`
+- Day-2 credential rotation procedures (per-component rotation without cluster disruption)
+- Upgrade guide: migrating from Passthrough to PerComponent mode on existing clusters
+- Downgrade guide: reverting to Passthrough mode and cleanup procedures
+- Support runbook for troubleshooting credential-related issues
+
+**Repositories:** openshift/openshift-docs, openshift-splat-team/enhancements
+
+**Dependencies:** Phases 0-4 (documentation must reflect finalized behavior)
+
+**Estimated Complexity:** Low to moderate — documentation and scripting work; scripts are partially drafted in this enhancement.
+
+### Phase 6: Testing and Graduation
+
+**Description:** Implement comprehensive testing and drive the feature through Tech Preview to GA graduation.
+
+**Key Deliverables:**
+- **Unit tests** for all modified components:
+  - API type validation and serialization (openshift/api)
+  - Canonical vCenter key normalization (installer, CCO)
+  - GetCredentialsForComponent mode-based resolution (CCO)
+  - Privilege validation logic with mock AuthorizationManager (vsphere-problem-detector)
+  - Fallback behavior when feature gate is disabled (all consumers)
+- **Integration tests:**
+  - Credential distribution from openshift-config to component namespaces (CCO)
+  - govcsim-based privilege validation (vsphere-problem-detector)
+  - Secret update propagation (CCO to component namespaces)
+  - Error scenarios: missing privileges, invalid credentials, missing Secrets
+- **E2E tests:**
+  - Full installation with per-component credentials on multi-vCenter topology
+  - Day-2 credential rotation for individual components
+  - Migration from Passthrough to PerComponent mode on a running cluster
+  - Downgrade from PerComponent to Passthrough mode
+  - Verify components use correct credentials via vCenter audit log analysis
+  - Tests on both vSphere 7.0 and vSphere 8.0
+- **Tech Preview graduation criteria:**
+  - Feature gate enabled in `TechPreviewNoUpgrade` and `DevPreviewNoUpgrade` feature sets
+  - Basic E2E tests passing in CI
+  - User feedback gathered through Tech Preview usage
+- **GA graduation criteria:**
+  - Feature gate promoted to the `Default` feature set
+  - Full upgrade and downgrade testing (Passthrough <-> PerComponent transitions)
+  - No P0/P1 bugs outstanding
+  - User-facing documentation published in openshift-docs
+  - Support runbook in place
+
+**Repositories:** All repositories from prior phases
+
+**Dependencies:** Phases 0-5 (all implementation and documentation complete)
+
+**Estimated Complexity:** High — testing spans all repositories and requires vSphere infrastructure with configurable accounts and multi-vCenter topologies.
+
+### Cross-Cutting Concerns
+
+The following concerns span multiple phases and repositories. Consistent handling across all components is essential.
+
+**Canonical vCenter Key Normalization:**
+The canonical key derivation algorithm (strip IPv6 brackets, expand to full 8-group form, replace colons with dashes, lowercase FQDNs, append non-default ports) must produce identical results in the installer, CCO, vsphere-problem-detector, and all component consumers. A shared utility library or function should be used, and the normalization must be covered by unit tests with identical test vectors across all repositories.
+
+**Secret Naming Conventions:**
+Secret names must be consistent across the installer (which creates them), CCO (which reads and distributes them), and component consumers (which consume the distributed copies). The naming convention is:
+- Source secrets in `openshift-config`: `vsphere-creds-<component>` (e.g., `vsphere-creds-machine-api`, `vsphere-creds-csi-driver`, `vsphere-creds-cloud-controller`, `vsphere-creds-diagnostics`)
+- Target secrets in component namespaces: existing names (e.g., `vsphere-cloud-credentials` in `openshift-machine-api`)
+- Secret data keys: `<canonical-vcenter-key>.username` and `<canonical-vcenter-key>.password`
+
+**Error Handling and Fallback Behavior:**
+All components must follow a consistent error model:
+- In PerComponent mode, missing or invalid per-component credentials produce an explicit error — no silent fallback to root credentials.
+- In Passthrough mode (explicit or default), the root credential (`kube-system/vsphere-creds`) is used for all components.
+- When the feature gate is disabled, components must ignore per-component configuration and operate in Passthrough mode.
+- CCO reports failures via `CredentialsProvisionFailed` conditions on `CredentialsRequest` resources. The vsphere-problem-detector reports privilege validation failures via its own conditions and metrics.
+
+**Metrics and Observability:**
+- CCO should expose metrics for credential distribution status per component and per vCenter (e.g., `cco_vsphere_credential_distribution_errors_total`).
+- The vsphere-problem-detector should expose metrics for privilege validation results per component and per vCenter (e.g., `vsphere_problem_detector_privilege_check_failures_total`).
+- All credential-related operations should emit structured log messages that identify the component, vCenter, and operation for troubleshooting.
+
 ### Risks and Mitigations
 
 | Risk | Mitigation |
