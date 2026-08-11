@@ -119,7 +119,7 @@ This enhancement extends OpenShift to support administrator-provisioned, per-com
 
 ### Component Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │                       Administrator Workflow (Per vCenter)                       │
 ├─────────────────────────────────────────────────────────────────────────────────┤
@@ -317,11 +317,23 @@ The installer reads from `~/.vsphere/credentials` when:
 
 **Installation Process:**
 
-1. The installer reads credentials from install-config.yaml or ~/.vsphere/credentials
-2. The installer creates per-component credential secrets in the cluster
-3. CCO validates each credential has required privileges for each vCenter
-4. If validation fails, CCO reports which privileges are missing and on which vCenter
-5. Components start using their designated credentials
+1. The installer reads credentials from install-config.yaml or ~/.vsphere/credentials.
+2. For each vCenter entry that includes `componentCredentials`, the installer:
+   a. Creates a named Secret per component in the `openshift-config` namespace. Secret names follow the convention `vsphere-creds-<component>` (e.g., `vsphere-creds-machine-api`, `vsphere-creds-csi-driver`).
+   b. Each Secret contains keys in the format `<vcenter-server>.username` / `<vcenter-server>.password` for every vCenter in the topology.
+   c. The Secrets are owned by the `Infrastructure` resource (`metadata.ownerReferences`) so that cluster lifecycle operations (e.g., destroy) clean them up.
+3. The installer sets `spec.platformSpec.vsphere.credentialsMode` to `PerComponent` on the `Infrastructure/cluster` resource and populates the `componentCredentials` field with `SecretReference` entries pointing to each created Secret (name + namespace).
+4. CCO reconciles the `Infrastructure` resource, reads each referenced Secret, and validates that the credentials have the required privileges on each vCenter (see [Credential Validation Workflow](#credential-validation-workflow)).
+5. If validation fails, CCO reports which privileges are missing and on which vCenter via `CredentialsProvisionFailed` conditions on the relevant `CredentialsRequest`.
+6. On successful validation, CCO copies validated credentials into target-namespace Secrets consumed by each component (preserving the existing cluster-storage-operator → CVO → CSI operator cloud-credentials contract where applicable).
+7. Components start using their designated credentials.
+
+**Secret Lifecycle:**
+
+- **Ownership:** The `openshift-config` Secrets are owned by the `Infrastructure/cluster` resource. Component-namespace copies (e.g., `openshift-machine-api/vsphere-cloud-credentials`) are owned by the corresponding `CredentialsRequest`.
+- **Update:** When an administrator updates a Secret in `openshift-config`, CCO detects the change via a watch, re-validates privileges, and propagates the updated credentials to component namespaces.
+- **Rotation:** Administrators rotate credentials by updating the `openshift-config` Secret with new values. CCO re-validates and distributes without component restart; components pick up new credentials on the next vCenter session reconnect.
+- **Rollback:** If updated credentials fail validation, CCO retains the last-known-good credentials in the component namespace and sets a `CredentialsProvisionFailed` condition. The administrator can revert the `openshift-config` Secret to restore the previous credentials.
 
 #### Alternative: Post-Installation Configuration
 
@@ -376,6 +388,7 @@ For existing clusters migrating to per-component credentials:
 
 When CCO receives credentials for a component (per vCenter):
 
+0. CCO reads referenced Secrets exclusively from the `openshift-config` namespace. If a `SecretReference` points to any other namespace, CCO rejects it immediately and sets `CredentialsProvisionFailed` without attempting to read the Secret.
 1. For each vCenter configured in the cluster:
    a. CCO extracts the component credentials for that vCenter
    b. CCO connects to the vCenter using the provided credentials
@@ -447,6 +460,46 @@ type VCenterCredential struct {
     Password string `json:"password"`
 }
 ```
+
+#### Canonical vCenter Credential Key Format
+
+Per-component Secrets store credentials keyed by vCenter server. Because Kubernetes Secret keys must conform to the DNS subdomain rules (alphanumeric, `-`, `_`, `.`), and raw IPv6 addresses contain colons (`:`) which are **invalid** in Secret keys, a normalization scheme is required.
+
+**Key derivation rules:**
+
+| VCenter.Server value | Port | Canonical key prefix |
+|----------------------|------|----------------------|
+| `vcenter.example.com` | (default 443) | `vcenter.example.com` |
+| `vcenter.example.com` | 8443 | `vcenter.example.com-8443` |
+| `192.168.1.100` | (default 443) | `192.168.1.100` |
+| `192.168.1.100` | 8443 | `192.168.1.100-8443` |
+| `fd00::1` | (default 443) | `fd00-0000-0000-0000-0000-0000-0000-0001` |
+| `[fd00::1]` | 8443 | `fd00-0000-0000-0000-0000-0000-0000-0001-8443` |
+
+**Normalization algorithm:**
+
+1. Strip surrounding brackets from IPv6 addresses (e.g., `[fd00::1]` → `fd00::1`).
+2. If the address is IPv6, expand to the full 8-group representation and replace every `:` with `-` (e.g., `fd00::1` → `fd00-0000-0000-0000-0000-0000-0000-0001`).
+3. FQDNs and IPv4 addresses are lowercased and used verbatim.
+4. If Port is specified and is not the default (443), append `-<port>` (e.g., `vcenter.example.com-8443`).
+5. Append `.username` or `.password` to form the final Secret data key.
+
+**Examples of resulting Secret keys:**
+
+```yaml
+stringData:
+  # FQDN (default port)
+  vcenter.example.com.username: "user@vsphere.local"
+  vcenter.example.com.password: "secret"
+  # IPv4 with non-default port
+  192.168.1.100-8443.username: "user@vsphere.local"
+  192.168.1.100-8443.password: "secret"
+  # IPv6 (expanded, colons replaced with dashes)
+  fd00-0000-0000-0000-0000-0000-0000-0001.username: "user@vsphere.local"
+  fd00-0000-0000-0000-0000-0000-0000-0001.password: "secret"
+```
+
+The installer and CCO both apply the same normalization when reading and writing Secret keys. The `~/.vsphere/credentials` file sections use the original `VCenter.Server` value (e.g., `[fd00::1]`); the installer normalizes when creating Secrets.
 
 #### ~/.vsphere/credentials File Format
 
@@ -540,10 +593,15 @@ type VSphereComponentCredentials struct {
 }
 
 // SecretReference identifies a secret in a namespace.
+// Namespace is restricted to "openshift-config" to limit the blast radius of
+// credential storage and simplify RBAC for CCO.
 type SecretReference struct {
     // Name is the name of the secret.
     Name string `json:"name"`
     // Namespace is the namespace of the secret.
+    // +kubebuilder:validation:Enum=openshift-config
+    // Must be "openshift-config". CCO rejects references to other namespaces
+    // during reconciliation and sets CredentialsProvisionFailed.
     Namespace string `json:"namespace"`
 }
 ```
@@ -606,14 +664,37 @@ type VSpherePermissionScope struct {
     // Type specifies the type of vSphere object.
     // Valid values: "vCenter", "Datacenter", "Cluster", "ResourcePool",
     //               "Folder", "Datastore", "Network"
+    // +kubebuilder:validation:Enum=vCenter;Datacenter;Cluster;ResourcePool;Folder;Datastore;Network
     Type string `json:"type"`
+
+    // VCenter identifies which vCenter this scope applies to, using the
+    // canonical key derived from VCenter.Server (see "Canonical vCenter
+    // Credential Key Format"). When empty, the scope applies to every
+    // vCenter in the cluster topology.
+    // +optional
+    VCenter string `json:"vCenter,omitempty"`
+
+    // Path is the concrete vSphere inventory path of the target object
+    // (e.g., "/Datacenter/vm/openshift-cluster1"). When InferFromClusterConfig
+    // is true this field is ignored; CCO resolves paths from the cluster's
+    // failure domain configuration instead.
+    // +optional
+    Path string `json:"path,omitempty"`
 
     // InferFromClusterConfig indicates the path should be derived from
     // the cluster's infrastructure configuration (failure domains).
+    // When true, CCO resolves every applicable target object from the
+    // Infrastructure resource's failure domains and validates privileges
+    // on each resolved object independently.
     // +optional
     InferFromClusterConfig bool `json:"inferFromClusterConfig,omitempty"`
 }
 ```
+
+**Privilege validation behavior:**
+
+- When `Propagate` is `true` in a `VSpherePermission`, CCO does **not** pass `Propagate` to `FetchUserPrivilegeOnEntities` (which does not accept it). Instead, CCO validates privileges on representative child objects (e.g., for a Folder scope with propagation, CCO checks both the folder and a child VM or subfolder) or inspects the permission assignment on the parent to confirm `propagate=true` is set.
+- When `InferFromClusterConfig` is `true`, CCO iterates all failure domains in the `Infrastructure` resource, resolves each to the relevant vSphere object (datacenter, cluster, folder, datastore, network), and validates privileges on every resolved target.
 
 ### Privilege Requirements by Component
 
@@ -622,7 +703,7 @@ Based on comprehensive code analysis of OpenShift repositories:
 #### Machine API Operator
 
 **vCenter Root (no propagation):**
-```
+```text
 Sessions.ValidateSession
 InventoryService.Tagging.AttachTag
 InventoryService.Tagging.CreateTag
@@ -631,13 +712,13 @@ InventoryService.Tagging.DeleteTag
 ```
 
 **Cluster (with propagation):**
-```
+```text
 Resource.AssignVMToPool
 VApp.AssignResourcePool
 ```
 
 **VM Folder (with propagation):**
-```
+```text
 VirtualMachine.Config.AddExistingDisk
 VirtualMachine.Config.AddNewDisk
 VirtualMachine.Config.AddRemoveDevice
@@ -667,14 +748,14 @@ InventoryService.Tagging.ObjectAttachable
 ```
 
 **Datastore (no propagation):**
-```
+```text
 Datastore.AllocateSpace
 Datastore.Browse
 Datastore.FileManagement
 ```
 
 **Network (no propagation):**
-```
+```text
 Network.Assign
 ```
 
@@ -683,20 +764,20 @@ Network.Assign
 #### CSI Driver
 
 **vCenter Root (no propagation):**
-```
+```text
 Cns.Searchable
 StorageProfile.View
 Sessions.ValidateSession
 ```
 
 **VM Folder (with propagation):**
-```
+```text
 VirtualMachine.Config.AddExistingDisk
 VirtualMachine.Config.AddRemoveDevice
 ```
 
 **Datastore (no propagation):**
-```
+```text
 Datastore.AllocateSpace
 Datastore.Browse
 Datastore.FileManagement
@@ -709,52 +790,52 @@ Datastore.FileManagement
 The Cloud Controller Manager is a **read-only** component that handles node discovery, zone/region topology, and instance metadata. It never creates, modifies, or deletes vSphere objects.
 
 **vCenter Root (no propagation):**
-```
+```text
 Sessions.ValidateSession
 System.Read
 InventoryService.Tagging.ObjectAttachable
 ```
 
 **Datacenter (with propagation):**
-```
+```text
 System.Read
 ```
 
 **VM Folder (with propagation):**
-```
+```text
 VirtualMachine.Config.Query
 ```
 
 **Cluster/ComputeResource (no propagation):**
-```
+```text
 Host.Inventory.View
 Resource.QueryVMotion
 ```
 
 **Datastore (no propagation):**
-```
+```text
 Datastore.Browse
 ```
 
 **Total: ~10 privileges (read-only)**
 
-*Note: The built-in "Read-only" role provides all necessary privileges for this component.*
+*Note: Although the built-in vCenter "Read-only" role includes all privileges listed above, it also grants broader inventory access (e.g., reading all VMs, hosts, and datastores across the entire vCenter). For least-privilege compliance, administrators should create a custom `openshift-cloud-controller` role containing only the privileges listed above. The provided govc and PowerCLI scripts create this custom role. Administrators who accept the broader read access of the built-in role may use it as a convenience alternative.*
 
 #### Diagnostics (vsphere-problem-detector)
 
 **vCenter Root (no propagation):**
-```
+```text
 Sessions.ValidateSession
 System.Read
 ```
 
 **Datacenter (no propagation):**
-```
+```text
 System.Read
 ```
 
 **Datastore (no propagation):**
-```
+```text
 Datastore.Browse
 ```
 
@@ -863,13 +944,25 @@ echo "All roles created successfully on all vCenters"
 #!/bin/bash
 # generate-vsphere-credentials.sh
 # Generates the ~/.vsphere/credentials file for per-component credentials
+# Non-destructive: will not overwrite an existing credentials file.
 
-CREDS_FILE="${HOME}/.vsphere/credentials"
-CREDS_DIR="${HOME}/.vsphere"
+set -euo pipefail
+umask 077
 
-# Create directory with secure permissions
-mkdir -p "$CREDS_DIR"
-chmod 700 "$CREDS_DIR"
+CREDS_FILE="${VSPHERE_CREDENTIALS_FILE:-${HOME}/.vsphere/credentials}"
+CREDS_DIR="$(dirname "$CREDS_FILE")"
+
+# Guard: refuse to overwrite an existing credentials file
+if [[ -f "$CREDS_FILE" ]]; then
+    echo "ERROR: Credentials file already exists at $CREDS_FILE" >&2
+    echo "Remove or rename it before running this script." >&2
+    exit 1
+fi
+
+# Create directory only when absent (umask 077 ensures 0700)
+if [[ ! -d "$CREDS_DIR" ]]; then
+    mkdir -p "$CREDS_DIR"
+fi
 
 # Generate credentials file template
 cat > "$CREDS_FILE" << 'EOF'
@@ -903,9 +996,6 @@ diagnostics.password = REPLACE_WITH_DIAGNOSTICS_PASSWORD
 # ...
 EOF
 
-# Set secure permissions
-chmod 600 "$CREDS_FILE"
-
 echo "Credentials template created at $CREDS_FILE"
 echo "Please edit the file and replace placeholder passwords"
 ```
@@ -927,7 +1017,41 @@ Connect-VIServer -Server $VCenterServer
 $machineAPIPrivileges = @(
     "Sessions.ValidateSession",
     "InventoryService.Tagging.AttachTag",
-    # ... (all privileges)
+    "InventoryService.Tagging.CreateTag",
+    "InventoryService.Tagging.EditTag",
+    "InventoryService.Tagging.DeleteTag",
+    "InventoryService.Tagging.ObjectAttachable",
+    "Resource.AssignVMToPool",
+    "VApp.AssignResourcePool",
+    "VirtualMachine.Config.AddExistingDisk",
+    "VirtualMachine.Config.AddNewDisk",
+    "VirtualMachine.Config.AddRemoveDevice",
+    "VirtualMachine.Config.AdvancedConfig",
+    "VirtualMachine.Config.Annotation",
+    "VirtualMachine.Config.CPUCount",
+    "VirtualMachine.Config.DiskExtend",
+    "VirtualMachine.Config.EditDevice",
+    "VirtualMachine.Config.Memory",
+    "VirtualMachine.Config.RemoveDisk",
+    "VirtualMachine.Config.Rename",
+    "VirtualMachine.Config.ResetGuestInfo",
+    "VirtualMachine.Config.Resource",
+    "VirtualMachine.Config.Settings",
+    "VirtualMachine.Interact.GuestControl",
+    "VirtualMachine.Interact.PowerOff",
+    "VirtualMachine.Interact.PowerOn",
+    "VirtualMachine.Interact.Reset",
+    "VirtualMachine.Inventory.Create",
+    "VirtualMachine.Inventory.CreateFromExisting",
+    "VirtualMachine.Inventory.Delete",
+    "VirtualMachine.Provisioning.Clone",
+    "VirtualMachine.Provisioning.DeployTemplate",
+    "VirtualMachine.State.CreateSnapshot",
+    "VirtualMachine.State.RemoveSnapshot",
+    "Datastore.AllocateSpace",
+    "Datastore.Browse",
+    "Datastore.FileManagement",
+    "Network.Assign"
 )
 New-VIRole -Name "openshift-machine-api" -Privilege (Get-VIPrivilege -Id $machineAPIPrivileges)
 
@@ -936,9 +1060,25 @@ $csiPrivileges = @(
     "Sessions.ValidateSession",
     "Cns.Searchable",
     "StorageProfile.View",
-    # ... (all privileges)
+    "VirtualMachine.Config.AddExistingDisk",
+    "VirtualMachine.Config.AddRemoveDevice",
+    "Datastore.AllocateSpace",
+    "Datastore.Browse",
+    "Datastore.FileManagement"
 )
 New-VIRole -Name "openshift-csi-driver" -Privilege (Get-VIPrivilege -Id $csiPrivileges)
+
+# Cloud Controller Manager Role (read-only)
+$cloudControllerPrivileges = @(
+    "Sessions.ValidateSession",
+    "System.Read",
+    "InventoryService.Tagging.ObjectAttachable",
+    "VirtualMachine.Config.Query",
+    "Host.Inventory.View",
+    "Resource.QueryVMotion",
+    "Datastore.Browse"
+)
+New-VIRole -Name "openshift-cloud-controller" -Privilege (Get-VIPrivilege -Id $cloudControllerPrivileges)
 
 # Diagnostics Role
 $diagPrivileges = @(
@@ -948,7 +1088,7 @@ $diagPrivileges = @(
 )
 New-VIRole -Name "openshift-diagnostics" -Privilege (Get-VIPrivilege -Id $diagPrivileges)
 
-Write-Host "Roles created successfully"
+Write-Host "Roles created successfully on $VCenterServer"
 ```
 
 ### Credential File Security
@@ -1035,7 +1175,13 @@ func (a *VSphereActuator) ValidateCredentialPrivileges(
 
     authManager := object.NewAuthorizationManager(client.Client)
     sessionMgr := session.NewManager(client.Client)
-    userSession, _ := sessionMgr.UserSession(ctx)
+    userSession, err := sessionMgr.UserSession(ctx)
+    if err != nil {
+        return fmt.Errorf("failed to retrieve user session: %v", err)
+    }
+    if userSession == nil {
+        return fmt.Errorf("user session is nil; credentials may be invalid or the session expired")
+    }
 
     var missingPrivileges []string
 
@@ -1076,23 +1222,39 @@ func (a *VSphereActuator) ValidateCredentialPrivileges(
 }
 ```
 
-#### Fallback to Passthrough Mode
+#### Credential Resolution by Mode
 
-If per-component credentials are not provided, CCO falls back to passthrough mode:
+CCO resolves credentials based on the configured `credentialsMode`. Root credentials
+are only used when Passthrough is explicitly configured (or as the default when no
+mode is set). In PerComponent mode, missing or invalid per-component credentials
+produce an error rather than silently falling back to the root credential.
 
 ```go
 func (a *VSphereActuator) GetCredentialsForComponent(
     ctx context.Context,
     component string,
 ) (*corev1.Secret, error) {
-    // Check for per-component credentials
-    componentCreds, err := a.getComponentCredentials(ctx, component)
-    if err == nil && componentCreds != nil {
-        return componentCreds, nil
-    }
+    mode := a.getCredentialsMode(ctx)
 
-    // Fall back to root credentials (passthrough)
-    return a.getRootCredentials(ctx)
+    switch mode {
+    case VSphereCredentialsModePerComponent:
+        // PerComponent mode: per-component credentials are required.
+        componentCreds, err := a.getComponentCredentials(ctx, component)
+        if err != nil {
+            return nil, fmt.Errorf("failed to retrieve credentials for component %s: %v", component, err)
+        }
+        if componentCreds == nil {
+            return nil, fmt.Errorf("no per-component credentials configured for %s in PerComponent mode", component)
+        }
+        return componentCreds, nil
+
+    case VSphereCredentialsModePassthrough, "":
+        // Passthrough mode (explicit or default): use root credentials.
+        return a.getRootCredentials(ctx)
+
+    default:
+        return nil, fmt.Errorf("unknown credentialsMode %q", mode)
+    }
 }
 ```
 
@@ -1232,9 +1394,21 @@ func (a *VSphereActuator) GetCredentialsForComponent(
 
 ### Downgrade (PerComponent → Passthrough)
 
-1. Administrator updates Infrastructure CR to Passthrough mode
-2. CCO reverts to distributing root credentials
-3. Per-component secrets remain but are unused
+1. Administrator updates the `Infrastructure/cluster` CR, setting `credentialsMode` to `Passthrough`.
+2. CCO detects the mode change during reconciliation, stops reading per-component `SecretReference` entries, and reverts to distributing the root credential (`kube-system/vsphere-creds`) to all component namespaces.
+3. Components pick up the root credential on their next reconciliation cycle.
+
+**Per-component Secret cleanup:**
+
+- The per-component Secrets in `openshift-config` (e.g., `vsphere-creds-machine-api`) are **not** automatically deleted during downgrade. CCO leaves them in place so that the administrator can re-enable PerComponent mode without re-creating Secrets.
+- CCO removes the `componentCredentials` field from the `Infrastructure` spec only when the administrator explicitly clears it. Until then, the references remain as documentation of the previous configuration.
+- The administrator is responsible for deleting unused per-component Secrets when they are no longer needed. The support procedures section provides commands for identifying and removing these Secrets.
+- If the administrator re-enables PerComponent mode before deleting the Secrets, CCO re-validates the existing credentials and resumes per-component distribution without data loss.
+
+**Rollback safety:**
+
+- During the transition window (after mode change, before all components reconcile), some components may still hold per-component credentials while others have already picked up the root credential. Both credential sets remain valid during this period because the root credential is a superset of all per-component privileges.
+- If the downgrade is reverted (switching back to PerComponent), CCO resumes using the existing per-component Secrets, provided they have not been deleted.
 
 ## Version Skew Strategy
 
@@ -1273,8 +1447,11 @@ oc get credentialsrequest -n openshift-cloud-credential-operator -o yaml
 # Check CCO logs
 oc logs -n openshift-cloud-credential-operator deployment/cloud-credential-operator
 
-# Verify component secrets exist
-oc get secret -n openshift-machine-api vsphere-cloud-credentials -o yaml
+# Verify component secrets exist (metadata only — never use -o yaml which dumps values)
+oc get secret -n openshift-machine-api vsphere-cloud-credentials
+# To inspect key names without exposing values:
+oc get secret -n openshift-machine-api vsphere-cloud-credentials \
+    -o go-template='{{range $k, $v := .data}}{{$k}}{{"\n"}}{{end}}'
 ```
 
 ### Reverting to Passthrough Mode
